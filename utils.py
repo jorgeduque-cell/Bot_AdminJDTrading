@@ -125,23 +125,78 @@ def is_blacklisted(name):
 # =========================================================================
 
 def build_google_maps_url(origin, waypoints, destination, travel_mode):
-    """Build a single Google Maps direction URL."""
-    encoded_origin = quote(origin, safe="")
-    encoded_dest = quote(destination, safe="")
+    """Build a single Google Maps direction URL. Accepts strings or (lat,lng) tuples."""
+    def _encode(point):
+        if isinstance(point, (list, tuple)) and len(point) == 2:
+            return f"{point[0]},{point[1]}"
+        return quote(str(point), safe=",")
 
     url = f"https://www.google.com/maps/dir/?api=1&travelmode={travel_mode}"
-    url += f"&origin={encoded_origin}"
+    url += f"&origin={_encode(origin)}"
 
     if waypoints:
-        encoded_wps = "|".join([quote(w, safe="") for w in waypoints])
+        encoded_wps = "|".join([_encode(w) for w in waypoints])
         url += f"&waypoints={encoded_wps}"
 
-    url += f"&destination={encoded_dest}"
+    url += f"&destination={_encode(destination)}"
     return url
 
 
+def build_walking_route(origin, stops, destination, stop_names=None):
+    """
+    Build Google Maps walking route URLs with clear segment labels.
+
+    Args:
+        origin: Starting point (str or (lat,lng))
+        stops: List of waypoints ((lat,lng) tuples or address strings)
+        destination: End point (str or (lat,lng))
+        stop_names: Optional list of names for each stop (for labels)
+
+    Returns:
+        List of (label, url) tuples
+    """
+    if not stops:
+        url = build_google_maps_url(origin, [], destination, "walking")
+        return [("🗺️ Ruta directa al destino", url)]
+
+    links = []
+
+    if len(stops) <= MAX_WAYPOINTS:
+        url = build_google_maps_url(origin, stops, destination, "walking")
+        total = len(stops)
+        links.append((f"🗺️ Ruta completa ({total} paradas)", url))
+    else:
+        # Split into segments with clear chaining
+        chunks = [stops[i:i + MAX_WAYPOINTS] for i in range(0, len(stops), MAX_WAYPOINTS)]
+        current_origin = origin
+        accumulated = 0
+
+        for idx, chunk in enumerate(chunks):
+            is_last = (idx == len(chunks) - 1)
+
+            if is_last:
+                chunk_dest = destination
+                dest_label = "→ DESTINO FINAL"
+            else:
+                chunk_dest = chunk[-1]
+                chunk = chunk[:-1]
+                dest_label = f"→ Parada #{accumulated + len(chunk) + 1}"
+
+            url = build_google_maps_url(current_origin, chunk, chunk_dest, "walking")
+            start_num = accumulated + 1
+            end_num = accumulated + len(chunk) + (1 if not is_last else 0)
+            label = f"🗺️ Tramo {idx + 1}: Paradas {start_num}-{end_num} {dest_label}"
+            links.append((label, url))
+
+            accumulated += len(chunk) + (1 if not is_last else 0)
+            if not is_last:
+                current_origin = chunk_dest
+
+    return links
+
+
 def build_google_maps_links(origin, addresses, destination, travel_mode):
-    """Build Google Maps URLs, splitting into chunks of MAX_WAYPOINTS."""
+    """Build Google Maps URLs for driving routes (legacy, used by /ruta_camion)."""
     if not addresses and not destination:
         return []
 
@@ -163,3 +218,4 @@ def build_google_maps_links(origin, addresses, destination, travel_mode):
             links.append((f"Ruta {idx + 1}", url))
 
     return links
+

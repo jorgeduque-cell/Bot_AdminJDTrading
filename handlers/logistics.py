@@ -344,7 +344,7 @@ def register(bot):
 # =========================================================================
 
 def execute_discovery_search(bot, message, route_data):
-    """Search Google Places for real businesses and build the prospecting route."""
+    """Search Google Places for real businesses and build a logical walking route."""
     try:
         bot.send_message(message.chat.id, "🔍 <b>Escaneando el terreno...</b>\nBuscando negocios reales en Google Maps...", reply_markup=types.ReplyKeyboardRemove())
 
@@ -368,59 +368,128 @@ def execute_discovery_search(bot, message, route_data):
                     plat, plng = ploc.get("lat", 0), ploc.get("lng", 0)
                     distance = haversine_distance(lat, lng, plat, plng)
                     all_places.append({
-                        "name": name, "address": place.get("vicinity", ""),
-                        "lat": plat, "lng": plng, "distance": distance,
+                        "name": name,
+                        "address": place.get("vicinity", ""),
+                        "lat": plat,
+                        "lng": plng,
+                        "distance_from_origin": distance,
                         "rating": place.get("rating", 0),
                         "total_ratings": place.get("user_ratings_total", 0),
                         "open_now": place.get("opening_hours", {}).get("open_now", None),
-                        "target_type": target_key, "emoji": info["emoji"],
+                        "target_type": target_key,
+                        "emoji": info["emoji"],
                     })
 
         if not all_places:
             bot.send_message(message.chat.id, f"📍 No se encontraron negocios de tipo <b>{route_data['target_label']}</b> en un radio de {radius}m.")
             return
 
-        all_places.sort(key=lambda p: p["distance"])
-        route_places = all_places[:MAX_DISCOVERY_STOPS]
-        remaining = len(all_places) - len(route_places)
-        addresses = [p["address"] + ", Bogota" for p in route_places]
+        # ============================================================
+        # NEAREST-NEIGHBOR SORTING (creates a logical walking path)
+        # Instead of sorting by distance to origin (star pattern),
+        # we greedily pick the closest unvisited place from current pos.
+        # ============================================================
+        candidates = list(all_places)
+        ordered_route = []
+        current_lat, current_lng = lat, lng
 
-        total_time = len(route_places) * MINUTES_PER_STOP
+        while candidates and len(ordered_route) < MAX_DISCOVERY_STOPS:
+            # Find nearest unvisited place from current position
+            best_idx = 0
+            best_dist = haversine_distance(current_lat, current_lng, candidates[0]["lat"], candidates[0]["lng"])
+            for i in range(1, len(candidates)):
+                d = haversine_distance(current_lat, current_lng, candidates[i]["lat"], candidates[i]["lng"])
+                if d < best_dist:
+                    best_dist = d
+                    best_idx = i
+
+            chosen = candidates.pop(best_idx)
+            chosen["walk_distance"] = best_dist  # distance from previous stop
+            ordered_route.append(chosen)
+            current_lat, current_lng = chosen["lat"], chosen["lng"]
+
+        remaining = len(all_places) - len(ordered_route)
+
+        # Calculate total walking distance (sum of all segments)
+        total_walk_m = sum(p["walk_distance"] for p in ordered_route)
+        total_walk_km = total_walk_m / 1000
+        total_time = len(ordered_route) * MINUTES_PER_STOP + int(total_walk_m / 80)  # ~80m/min walking
         hours, mins = total_time // 60, total_time % 60
 
-        links = build_google_maps_links(route_data["origin_text"], addresses, route_data["destination"], "walking")
+        # Build Google Maps links using exact coordinates
+        from utils import build_walking_route
+        stop_coords = [(p["lat"], p["lng"]) for p in ordered_route]
+        links = build_walking_route(
+            route_data["origin_text"],
+            stop_coords,
+            route_data["destination"]
+        )
 
-        response = "📱 <b>RADAR DE PROSPECCIÓN TERRITORIAL</b>\n" + "━" * 34 + "\n"
-        response += f"📍 Zona: {route_data['origin_text']}\n🎯 Target: {route_data['target_label']}\n"
-        response += f"📌 Radio: {radius}m\n🚏 Regreso: {route_data['dest_label']}\n"
-        response += f"⏱️ Tiempo estimado: ~{hours}h {mins}min\n"
-        response += f"🔍 Negocios encontrados: <b>{len(all_places)}</b>\n📊 En ruta: <b>{len(route_places)}</b>\n"
-        response += "━" * 34 + "\n\n📋 <b>NEGOCIOS DESCUBIERTOS (por cercanía):</b>\n\n"
+        # ============================================================
+        # BUILD THE OUTPUT MESSAGE
+        # ============================================================
+        response = "📱 <b>RADAR DE PROSPECCIÓN TERRITORIAL</b>\n"
+        response += "━" * 34 + "\n\n"
 
-        for i, place in enumerate(route_places, 1):
-            dist_label = f"{place['distance']:.0f}m" if place["distance"] < 1000 else f"{place['distance'] / 1000:.1f}km"
+        # ---- RESUMEN ----
+        response += f"📍 <b>Zona:</b> {route_data['origin_text']}\n"
+        response += f"🎯 <b>Target:</b> {route_data['target_label']}\n"
+        response += f"📌 <b>Radio:</b> {radius}m\n"
+        response += f"🔍 <b>Encontrados:</b> {len(all_places)} negocios\n"
+        response += f"📊 <b>En ruta:</b> {len(ordered_route)} paradas\n"
+        response += f"🚶 <b>Distancia total:</b> ~{total_walk_km:.1f} km\n"
+        response += f"⏱️ <b>Tiempo estimado:</b> ~{hours}h {mins}min\n\n"
+
+        # ---- FLUJO VISUAL DE LA RUTA ----
+        response += "🗺️ <b>RECORRIDO PASO A PASO:</b>\n"
+        response += "━" * 34 + "\n\n"
+
+        # START
+        response += f"🟢 <b>INICIO:</b> {route_data['origin_text']}\n"
+        response += "     │\n"
+
+        # STOPS (in walking order)
+        for i, place in enumerate(ordered_route, 1):
+            walk_label = f"{place['walk_distance']:.0f}m" if place["walk_distance"] < 1000 else f"{place['walk_distance'] / 1000:.1f}km"
             open_icon = "🟢" if place["open_now"] else ("🔴" if place["open_now"] is False else "⚪")
-            response += f"{place['emoji']} <b>{i}. {place['name']}</b>\n"
-            response += f"   📍 {place['address']}\n   📎 {dist_label} {open_icon}"
+
+            response += f"     ↓ 🚶 {walk_label}\n"
+            response += f"📍 <b>{i}. {place['name']}</b> {place['emoji']}\n"
+            response += f"     {place['address']}\n"
+            response += f"     {open_icon}"
             if place["rating"]:
                 response += f" ⭐ {place['rating']}"
             if place["total_ratings"]:
                 response += f" ({place['total_ratings']} reseñas)"
-            response += "\n\n"
+            response += "\n"
 
+            if i < len(ordered_route):
+                response += "     │\n"
+
+        # END
+        response += "     │\n"
+        response += "     ↓ 🚶 caminar a estación\n"
+        response += f"🔴 <b>FIN:</b> {route_data['dest_label']}\n\n"
+
+        # ---- PITCH ----
         if len(route_data["target_keys"]) == 1:
             target_key = route_data["target_keys"][0]
             pitch = TARGET_BUSINESS_TYPES[target_key]["pitch"]
             response += f"💡 <b>Pitch de venta:</b>\n{pitch}\n\n"
 
-        response += "🗺️ <b>NAVEGACIÓN:</b>\n"
+        # ---- LINKS DE NAVEGACIÓN ----
+        response += "━" * 34 + "\n"
+        response += "📲 <b>ABRIR EN GOOGLE MAPS:</b>\n\n"
         for label, url in links:
-            response += f"  📌 <a href='{url}'>{label}</a>\n"
+            response += f"  <a href='{url}'>{label}</a>\n"
+
         if remaining > 0:
             response += f"\n⚠️ Hay <b>{remaining}</b> negocios más fuera de esta ruta."
+
         response += "\n\n🔥 <i>Busca chimeneas con humo, motos de domiciliarios,</i>"
         response += "\n<i>y dueños que te paguen en efectivo el viernes.</i>"
 
         bot.send_message(message.chat.id, response, disable_web_page_preview=True)
     except Exception as e:
         bot.send_message(message.chat.id, f"⚠️ Error en búsqueda: {e}")
+
