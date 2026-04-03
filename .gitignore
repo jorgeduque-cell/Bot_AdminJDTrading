@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Database (local dev only — Render uses ephemeral storage)
+jd_trading.db
+
+# Environment
+.env
+*.env
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Project docs (not needed in deploy)
+audit_report.md
+implementation_plan.md
+*.docx
+*.pdf
