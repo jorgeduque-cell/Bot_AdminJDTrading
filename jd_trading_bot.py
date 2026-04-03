@@ -76,6 +76,13 @@ if __name__ == "__main__":
     print("  Base de datos lista.")
     set_bot_commands()
     print("  Comandos de menú registrados.")
+
+    # Health check server (keeps Render free tier alive)
+    from health import start_health_server
+    port = start_health_server()
+    print(f"  Health server en puerto {port}.")
+
     print("  Bot en ejecución. Presiona Ctrl+C para detener.")
     print("=" * 50)
     bot.infinity_polling(timeout=60, long_polling_timeout=60)
+

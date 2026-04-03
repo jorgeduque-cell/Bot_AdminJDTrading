@@ -1,7 +1,8 @@
 services:
-  - type: worker
+  - type: web
     name: jd-trading-bot
     runtime: python
+    plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: python jd_trading_bot.py
     envVars:
