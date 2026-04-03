@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Handlers: Logistics — Routing & Inventory
-Commands: /ruta_pie, /ruta_camion, /inventario
+Commands: /ruta_pie, /ruta_camion, /ruta_semanal, /inventario
 """
 from telebot import types
 from datetime import date
@@ -14,8 +14,13 @@ from config import (
 from database import get_connection
 from utils import (
     is_admin, geocode_address, search_nearby_places,
-    haversine_distance, is_blacklisted, build_google_maps_links
+    haversine_distance, is_blacklisted, build_google_maps_links,
+    build_walking_route
 )
+
+WEEKDAYS = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"]
+WEEKDAY_EMOJIS = {"Lunes": "1️⃣", "Martes": "2️⃣", "Miércoles": "3️⃣", "Jueves": "4️⃣", "Viernes": "5️⃣", "Sábado": "6️⃣"}
+DAY_INDEX_MAP = {"Monday": "Lunes", "Tuesday": "Martes", "Wednesday": "Miércoles", "Thursday": "Jueves", "Friday": "Viernes", "Saturday": "Sábado"}
 
 
 def register(bot):
@@ -337,6 +342,154 @@ def register(bot):
             bot.send_message(message.chat.id, response, disable_web_page_preview=True)
         except Exception as e:
             bot.send_message(message.chat.id, f"⚠️ Error al generar ruta: {e}")
+
+    # --------------- /ruta_semanal ---------------
+
+    @bot.message_handler(commands=["ruta_semanal"])
+    def cmd_weekly_route(message):
+        if not is_admin(message):
+            return
+        try:
+            import datetime
+            today_name = DAY_INDEX_MAP.get(datetime.datetime.now().strftime("%A"), None)
+
+            # Show summary of clients per day
+            conn = get_connection()
+            try:
+                summary = ""
+                for day in WEEKDAYS:
+                    count = conn.execute(
+                        "SELECT COUNT(*) as c FROM clientes WHERE dia_visita = ? AND latitud IS NOT NULL", (day,)
+                    ).fetchone()["c"]
+                    today_mark = " ← HOY" if day == today_name else ""
+                    summary += f"  {WEEKDAY_EMOJIS[day]} {day}: <b>{count}</b> clientes{today_mark}\n"
+
+                no_day = conn.execute(
+                    "SELECT COUNT(*) as c FROM clientes WHERE dia_visita IS NULL AND estado = 'Activo'"
+                ).fetchone()["c"]
+                summary += f"  ❓ Sin asignar: {no_day} clientes activos\n"
+            finally:
+                conn.close()
+
+            markup = types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
+            if today_name and today_name in WEEKDAYS:
+                markup.add(f"📍 Ruta de HOY ({today_name})")
+            for day in WEEKDAYS:
+                markup.add(f"{WEEKDAY_EMOJIS[day]} {day}")
+            markup.add("❌ Cancelar")
+
+            bot.send_message(
+                message.chat.id,
+                f"📅 <b>RUTAS SEMANALES FIJAS</b>\n"
+                f"━" * 30 + "\n\n"
+                f"{summary}\n"
+                "¿Qué día deseas ver?",
+                reply_markup=markup
+            )
+            bot.register_next_step_handler(message, step_weekly_select_day)
+        except Exception as e:
+            bot.send_message(message.chat.id, f"⚠️ Error: {e}")
+
+    def step_weekly_select_day(message):
+        if not is_admin(message):
+            return
+        try:
+            selected = message.text.strip()
+            if "Cancelar" in selected:
+                bot.send_message(message.chat.id, "❌ Cancelado.", reply_markup=types.ReplyKeyboardRemove())
+                return
+
+            chosen_day = None
+            for day in WEEKDAYS:
+                if day in selected:
+                    chosen_day = day
+                    break
+
+            if not chosen_day:
+                bot.send_message(message.chat.id, "❌ Día no reconocido.", reply_markup=types.ReplyKeyboardRemove())
+                return
+
+            conn = get_connection()
+            try:
+                clients = conn.execute("""
+                    SELECT id, nombre, direccion, telefono, tipo_negocio, latitud, longitud
+                    FROM clientes
+                    WHERE dia_visita = ? AND latitud IS NOT NULL AND longitud IS NOT NULL
+                    ORDER BY nombre
+                """, (chosen_day,)).fetchall()
+            finally:
+                conn.close()
+
+            if not clients:
+                bot.send_message(
+                    message.chat.id,
+                    f"📭 No hay clientes geolocalizados asignados al <b>{chosen_day}</b>.\n\n"
+                    "Usa /asignar_dia para asignar clientes a un día.",
+                    reply_markup=types.ReplyKeyboardRemove()
+                )
+                return
+
+            # Nearest-neighbor sort for optimal walking path
+            ordered = []
+            remaining = list(clients)
+            # Start from warehouse
+            current_lat, current_lng = geocode_address(f"{COMPANY_ADDRESS}, {COMPANY_CITY}")
+            if current_lat is None:
+                current_lat, current_lng = 4.7110, -74.0721  # Bogota fallback
+
+            while remaining:
+                best_idx = 0
+                best_dist = haversine_distance(current_lat, current_lng, remaining[0]["latitud"], remaining[0]["longitud"])
+                for i in range(1, len(remaining)):
+                    d = haversine_distance(current_lat, current_lng, remaining[i]["latitud"], remaining[i]["longitud"])
+                    if d < best_dist:
+                        best_dist = d
+                        best_idx = i
+                c = remaining.pop(best_idx)
+                ordered.append({"client": c, "walk_distance": best_dist})
+                current_lat, current_lng = c["latitud"], c["longitud"]
+
+            # Build route
+            total_walk = sum(item["walk_distance"] for item in ordered) / 1000
+            stop_coords = [(item["client"]["latitud"], item["client"]["longitud"]) for item in ordered]
+            links = build_walking_route(
+                f"{COMPANY_ADDRESS}, {COMPANY_CITY}",
+                stop_coords,
+                f"{COMPANY_ADDRESS}, {COMPANY_CITY}"
+            )
+
+            # Build message
+            response = f"📅 <b>RUTA DEL {chosen_day.upper()}</b>\n"
+            response += "━" * 30 + "\n\n"
+            response += f"👥 <b>{len(ordered)}</b> clientes | 🚶 ~{total_walk:.1f} km\n\n"
+
+            response += f"🟢 <b>SALIDA:</b> {COMPANY_ADDRESS}\n"
+            response += "     │\n"
+
+            for i, item in enumerate(ordered, 1):
+                c = item["client"]
+                walk = item["walk_distance"]
+                walk_label = f"{walk:.0f}m" if walk < 1000 else f"{walk/1000:.1f}km"
+
+                response += f"     ↓ 🚶 {walk_label}\n"
+                response += f"📍 <b>{i}. {c['nombre']}</b>\n"
+                response += f"     {c['direccion']}\n"
+                response += f"     📱 {c['telefono'] or 'Sin tel.'} | 🏪 {c['tipo_negocio'] or ''}\n"
+                if i < len(ordered):
+                    response += "     │\n"
+
+            response += "     │\n"
+            response += "     ↓ 🚶 regreso\n"
+            response += f"🔴 <b>REGRESO:</b> {COMPANY_ADDRESS}\n\n"
+
+            response += "━" * 30 + "\n"
+            response += "📲 <b>ABRIR EN GOOGLE MAPS:</b>\n\n"
+            for label, url in links:
+                response += f"  <a href='{url}'>{label}</a>\n"
+
+            bot.send_message(message.chat.id, response, reply_markup=types.ReplyKeyboardRemove(), disable_web_page_preview=True)
+        except Exception as e:
+            bot.send_message(message.chat.id, f"⚠️ Error: {e}")
 
 
 # =========================================================================

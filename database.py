@@ -83,7 +83,22 @@ def init_database():
     try:
         cursor.execute("ALTER TABLE finanzas ADD COLUMN pedido_id INTEGER")
     except sqlite3.OperationalError:
-        pass  # Column already exists
+        pass
+
+    try:
+        cursor.execute("ALTER TABLE clientes ADD COLUMN latitud REAL")
+    except sqlite3.OperationalError:
+        pass
+
+    try:
+        cursor.execute("ALTER TABLE clientes ADD COLUMN longitud REAL")
+    except sqlite3.OperationalError:
+        pass
+
+    try:
+        cursor.execute("ALTER TABLE clientes ADD COLUMN dia_visita TEXT")
+    except sqlite3.OperationalError:
+        pass
 
     # Seed inventory with default products if empty
     cursor.execute("SELECT COUNT(*) FROM inventario")

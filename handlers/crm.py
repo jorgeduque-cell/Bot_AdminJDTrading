@@ -1,15 +1,18 @@
 # -*- coding: utf-8 -*-
 """
 Handlers: CRM & Commercial Intelligence
-Commands: /nuevo_cliente, /clientes, /buscar, /radar
+Commands: /nuevo_cliente, /clientes, /buscar, /radar, /asignar_dia
 """
 from telebot import types
 from datetime import date, timedelta
 import re
 
-from config import TARGET_BUSINESS_TYPES, BLACKLIST_KEYWORDS, BLACKLIST_WARNING
+from config import TARGET_BUSINESS_TYPES, BLACKLIST_KEYWORDS, BLACKLIST_WARNING, logger
 from database import get_connection
-from utils import is_admin, safe_split, sanitize_phone_co
+from utils import is_admin, safe_split, sanitize_phone_co, geocode_address
+
+WEEKDAYS = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"]
+WEEKDAY_EMOJIS = {"Lunes": "1️⃣", "Martes": "2️⃣", "Miércoles": "3️⃣", "Jueves": "4️⃣", "Viernes": "5️⃣", "Sábado": "6️⃣"}
 
 
 def register(bot):
@@ -41,7 +44,12 @@ def register(bot):
             return
         try:
             client_data["telefono"] = message.text.strip()
-            bot.send_message(message.chat.id, "📍 Escribe la <b>dirección</b> del cliente:")
+            bot.send_message(
+                message.chat.id,
+                "📍 Escribe la <b>dirección</b> del cliente:\n"
+                "<i>(Sé lo más preciso posible para la geolocalización)</i>\n"
+                "Ej: Calle 170 #9-15, Bogota"
+            )
             bot.register_next_step_handler(message, step_client_address, client_data)
         except Exception as e:
             bot.send_message(message.chat.id, f"⚠️ Error: {e}")
@@ -51,6 +59,25 @@ def register(bot):
             return
         try:
             client_data["direccion"] = message.text.strip()
+
+            # Auto-geocode the address
+            bot.send_message(message.chat.id, "🔍 Geolocalizando dirección...")
+            lat, lng = geocode_address(client_data["direccion"])
+            if lat is not None:
+                client_data["latitud"] = lat
+                client_data["longitud"] = lng
+                bot.send_message(
+                    message.chat.id,
+                    f"✅ Ubicación encontrada: <code>{lat:.5f}, {lng:.5f}</code>"
+                )
+            else:
+                client_data["latitud"] = None
+                client_data["longitud"] = None
+                bot.send_message(
+                    message.chat.id,
+                    "⚠️ No se encontró ubicación GPS. El cliente se guardará sin coordenadas.\n"
+                    "<i>(Puedes actualizarla después con /editar)</i>"
+                )
 
             markup = types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
             for key, info in TARGET_BUSINESS_TYPES.items():
@@ -84,7 +111,8 @@ def register(bot):
             else:
                 client_data["tipo_negocio"] = selected
 
-            save_client(bot, message, client_data)
+            # Ask for visit day
+            ask_visit_day(bot, message, client_data)
         except Exception as e:
             bot.send_message(message.chat.id, f"⚠️ Error: {e}")
 
@@ -100,7 +128,7 @@ def register(bot):
                 return
 
             client_data["tipo_negocio"] = business_name
-            save_client(bot, message, client_data)
+            ask_visit_day(bot, message, client_data)
         except Exception as e:
             bot.send_message(message.chat.id, f"⚠️ Error: {e}")
 
@@ -110,9 +138,115 @@ def register(bot):
         try:
             answer = message.text.strip().lower()
             if answer in ["si", "sí", "s", "yes"]:
-                save_client(bot, message, client_data)
+                ask_visit_day(bot, message, client_data)
             else:
                 bot.send_message(message.chat.id, "✅ Registro cancelado. ¡Sigue buscando clientes VIP!")
+        except Exception as e:
+            bot.send_message(message.chat.id, f"⚠️ Error: {e}")
+
+    def ask_visit_day(bot, message, client_data):
+        """Ask user which day of the week to visit this client."""
+        markup = types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
+        for day in WEEKDAYS:
+            markup.add(f"{WEEKDAY_EMOJIS[day]} {day}")
+        markup.add("⏭️ Omitir (asignar después)")
+
+        bot.send_message(
+            message.chat.id,
+            "📅 <b>¿Qué día de la semana visitas a este cliente?</b>\n"
+            "<i>(Para armar tu ruta semanal fija)</i>",
+            reply_markup=markup
+        )
+        bot.register_next_step_handler(message, step_client_visit_day, client_data)
+
+    def step_client_visit_day(message, client_data):
+        if not is_admin(message):
+            return
+        try:
+            selected = message.text.strip()
+            if "Omitir" in selected:
+                client_data["dia_visita"] = None
+            else:
+                for day in WEEKDAYS:
+                    if day in selected:
+                        client_data["dia_visita"] = day
+                        break
+                else:
+                    client_data["dia_visita"] = None
+
+            save_client(bot, message, client_data)
+        except Exception as e:
+            bot.send_message(message.chat.id, f"⚠️ Error: {e}")
+
+    # --------------- /asignar_dia ---------------
+
+    @bot.message_handler(commands=["asignar_dia"])
+    def cmd_assign_day(message):
+        if not is_admin(message):
+            return
+        try:
+            bot.send_message(message.chat.id, "📅 Escribe el <b>ID del cliente</b> para asignarle un día de visita:")
+            bot.register_next_step_handler(message, step_assign_day_id)
+        except Exception as e:
+            bot.send_message(message.chat.id, f"⚠️ Error: {e}")
+
+    def step_assign_day_id(message):
+        if not is_admin(message):
+            return
+        try:
+            client_id = int(message.text.strip())
+            conn = get_connection()
+            try:
+                client = conn.execute("SELECT nombre, dia_visita FROM clientes WHERE id = ?", (client_id,)).fetchone()
+            finally:
+                conn.close()
+
+            if not client:
+                bot.send_message(message.chat.id, f"❌ No existe cliente con ID {client_id}")
+                return
+
+            current_day = client["dia_visita"] or "Sin asignar"
+
+            markup = types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
+            for day in WEEKDAYS:
+                markup.add(f"{WEEKDAY_EMOJIS[day]} {day}")
+            markup.add("🚫 Quitar día asignado")
+
+            bot.send_message(
+                message.chat.id,
+                f"📅 <b>{client['nombre']}</b>\nDía actual: <b>{current_day}</b>\n\n¿Qué día asignar?",
+                reply_markup=markup
+            )
+            bot.register_next_step_handler(message, step_assign_day_save, client_id)
+        except ValueError:
+            bot.send_message(message.chat.id, "❌ ID inválido.")
+        except Exception as e:
+            bot.send_message(message.chat.id, f"⚠️ Error: {e}")
+
+    def step_assign_day_save(message, client_id):
+        if not is_admin(message):
+            return
+        try:
+            selected = message.text.strip()
+            new_day = None
+
+            if "Quitar" in selected:
+                new_day = None
+            else:
+                for day in WEEKDAYS:
+                    if day in selected:
+                        new_day = day
+                        break
+
+            conn = get_connection()
+            try:
+                conn.execute("UPDATE clientes SET dia_visita = ? WHERE id = ?", (new_day, client_id))
+                conn.commit()
+            finally:
+                conn.close()
+
+            label = new_day or "Sin asignar"
+            bot.send_message(message.chat.id, f"✅ Día de visita actualizado: <b>{label}</b>", reply_markup=types.ReplyKeyboardRemove())
         except Exception as e:
             bot.send_message(message.chat.id, f"⚠️ Error: {e}")
 
@@ -161,8 +295,10 @@ def register(bot):
             response = f"👥 <b>CLIENTES — {label}</b> ({len(clients)}):\n\n"
             for c in clients:
                 state_icon = "✅" if c["estado"] == "Activo" else "⏳"
-                response += f"{state_icon} <b>{c['id']}. {c['nombre']}</b>\n"
-                response += f"   📱 {c['telefono'] or 'N/A'} | 🏪 {c['tipo_negocio'] or 'N/A'}\n"
+                day_tag = f" | 📅 {c['dia_visita']}" if c["dia_visita"] else ""
+                gps_tag = " 📌" if c["latitud"] else ""
+                response += f"{state_icon} <b>{c['id']}. {c['nombre']}</b>{gps_tag}\n"
+                response += f"   📱 {c['telefono'] or 'N/A'} | 🏪 {c['tipo_negocio'] or 'N/A'}{day_tag}\n"
                 response += f"   📍 {c['direccion'] or 'N/A'}\n\n"
 
             if len(response) > 4000:
@@ -203,8 +339,9 @@ def register(bot):
             response = f"🔍 <b>Resultados para \"{query}\":</b>\n\n"
             for c in results:
                 state_icon = "✅" if c["estado"] == "Activo" else "⏳"
+                day_tag = f" | 📅 {c['dia_visita']}" if c["dia_visita"] else ""
                 response += f"{state_icon} <b>{c['id']}. {c['nombre']}</b>\n"
-                response += f"   📱 {c['telefono'] or 'N/A'} | 🏪 {c['tipo_negocio'] or 'N/A'}\n"
+                response += f"   📱 {c['telefono'] or 'N/A'} | 🏪 {c['tipo_negocio'] or 'N/A'}{day_tag}\n"
                 response += f"   📍 {c['direccion'] or 'N/A'}\n\n"
 
             bot.send_message(message.chat.id, response)
@@ -287,7 +424,7 @@ def register(bot):
 # =========================================================================
 
 def save_client(bot, message, client_data):
-    """Persist client to database and confirm."""
+    """Persist client to database with GPS coordinates and visit day."""
     try:
         today = date.today().isoformat()
         tipo = client_data["tipo_negocio"]
@@ -295,10 +432,13 @@ def save_client(bot, message, client_data):
         conn = get_connection()
         try:
             cursor = conn.execute(
-                """INSERT INTO clientes (nombre, telefono, direccion, tipo_negocio, estado, fecha_registro, ultima_interaccion)
-                   VALUES (?, ?, ?, ?, 'Prospecto', ?, ?)""",
+                """INSERT INTO clientes
+                   (nombre, telefono, direccion, tipo_negocio, estado, fecha_registro, ultima_interaccion, latitud, longitud, dia_visita)
+                   VALUES (?, ?, ?, ?, 'Prospecto', ?, ?, ?, ?, ?)""",
                 (client_data["nombre"], client_data["telefono"],
-                 client_data["direccion"], tipo, today, today)
+                 client_data["direccion"], tipo, today, today,
+                 client_data.get("latitud"), client_data.get("longitud"),
+                 client_data.get("dia_visita"))
             )
             conn.commit()
             client_id = cursor.lastrowid
@@ -311,13 +451,21 @@ def save_client(bot, message, client_data):
                 pitch = f"\n\n💡 <b>Tip de venta:</b> {info['pitch']}"
                 break
 
+        gps_line = ""
+        if client_data.get("latitud"):
+            gps_line = f"\n📌 GPS: <code>{client_data['latitud']:.5f}, {client_data['longitud']:.5f}</code>"
+
+        day_line = ""
+        if client_data.get("dia_visita"):
+            day_line = f"\n📅 Día de visita: {client_data['dia_visita']}"
+
         bot.send_message(
             message.chat.id,
             f"✅ <b>Cliente registrado con éxito</b>\n\n"
             f"🆔 ID: <b>{client_id}</b>\n"
             f"👤 {client_data['nombre']}\n"
             f"📱 {client_data['telefono']}\n"
-            f"📍 {client_data['direccion']}\n"
+            f"📍 {client_data['direccion']}{gps_line}{day_line}\n"
             f"🏪 {tipo}\n"
             f"📌 Estado: Prospecto{pitch}",
             reply_markup=types.ReplyKeyboardRemove()
