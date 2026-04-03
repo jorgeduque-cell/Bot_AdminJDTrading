@@ -100,6 +100,53 @@ def init_database():
     except sqlite3.OperationalError:
         pass
 
+    try:
+        cursor.execute("ALTER TABLE pedidos ADD COLUMN estado_pago TEXT DEFAULT 'Pendiente'")
+    except sqlite3.OperationalError:
+        pass
+
+    # --- NEW TABLES (Feature Sprint) ---
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS notas_cliente (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cliente_id INTEGER NOT NULL,
+            texto TEXT NOT NULL,
+            fecha DATE,
+            FOREIGN KEY (cliente_id) REFERENCES clientes(id)
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS precios (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            producto TEXT NOT NULL UNIQUE,
+            precio_compra REAL NOT NULL DEFAULT 0,
+            precio_venta REAL NOT NULL DEFAULT 0,
+            fecha_actualizacion DATE
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS metas (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tipo TEXT NOT NULL DEFAULT 'semanal',
+            meta REAL NOT NULL,
+            fecha_inicio DATE,
+            fecha_fin DATE
+        )
+    """)
+
+    # Seed prices from catalog if empty
+    cursor.execute("SELECT COUNT(*) FROM precios")
+    if cursor.fetchone()[0] == 0:
+        today = date.today().isoformat()
+        for product_name in PRODUCT_CATALOG:
+            cursor.execute(
+                "INSERT INTO precios (producto, precio_compra, precio_venta, fecha_actualizacion) VALUES (?, 0, 0, ?)",
+                (product_name, today)
+            )
+
     # Seed inventory with default products if empty
     cursor.execute("SELECT COUNT(*) FROM inventario")
     if cursor.fetchone()[0] == 0:
@@ -112,3 +159,4 @@ def init_database():
 
     conn.commit()
     conn.close()
+

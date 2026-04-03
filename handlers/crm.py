@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Handlers: CRM & Commercial Intelligence
-Commands: /nuevo_cliente, /clientes, /buscar, /radar, /asignar_dia
+Commands: /nuevo_cliente, /clientes, /buscar, /radar, /asignar_dia, /nota, /ficha, /seguimiento
 """
 from telebot import types
 from datetime import date, timedelta
@@ -417,6 +417,236 @@ def register(bot):
             bot.send_message(message.chat.id, report, disable_web_page_preview=True)
         except Exception as e:
             bot.send_message(message.chat.id, f"⚠️ Error al generar radar: {e}")
+
+    # --------------- /nota ---------------
+
+    @bot.message_handler(commands=["nota"])
+    def cmd_note(message):
+        if not is_admin(message):
+            return
+        try:
+            parts = message.text.strip().split(maxsplit=1)
+            if len(parts) < 2:
+                bot.send_message(message.chat.id, "❌ Uso: /nota [ID_Cliente]")
+                return
+
+            client_id = int(parts[1])
+            conn = get_connection()
+            try:
+                client = conn.execute("SELECT nombre FROM clientes WHERE id = ?", (client_id,)).fetchone()
+            finally:
+                conn.close()
+
+            if not client:
+                bot.send_message(message.chat.id, f"❌ No existe cliente con ID {client_id}")
+                return
+
+            bot.send_message(
+                message.chat.id,
+                f"📝 <b>NOTA PARA: {client['nombre']}</b>\n\n"
+                "Escribe la nota de visita, observación o recordatorio:"
+            )
+            bot.register_next_step_handler(message, step_note_save, client_id, client["nombre"])
+        except ValueError:
+            bot.send_message(message.chat.id, "❌ ID inválido.")
+        except Exception as e:
+            bot.send_message(message.chat.id, f"⚠️ Error: {e}")
+
+    def step_note_save(message, client_id, client_name):
+        if not is_admin(message):
+            return
+        try:
+            text = message.text.strip()
+            today = date.today().isoformat()
+
+            conn = get_connection()
+            try:
+                conn.execute(
+                    "INSERT INTO notas_cliente (cliente_id, texto, fecha) VALUES (?, ?, ?)",
+                    (client_id, text, today)
+                )
+                conn.execute("UPDATE clientes SET ultima_interaccion = ? WHERE id = ?", (today, client_id))
+                conn.commit()
+            finally:
+                conn.close()
+
+            bot.send_message(
+                message.chat.id,
+                f"✅ <b>Nota guardada</b>\n\n"
+                f"👤 {client_name}\n"
+                f"📝 {text}\n"
+                f"📅 {today}"
+            )
+        except Exception as e:
+            bot.send_message(message.chat.id, f"⚠️ Error: {e}")
+
+    # --------------- /ficha ---------------
+
+    @bot.message_handler(commands=["ficha"])
+    def cmd_profile(message):
+        if not is_admin(message):
+            return
+        try:
+            parts = message.text.strip().split(maxsplit=1)
+            if len(parts) < 2:
+                bot.send_message(message.chat.id, "❌ Uso: /ficha [ID_Cliente]")
+                return
+
+            client_id = int(parts[1])
+            conn = get_connection()
+            try:
+                client = conn.execute("SELECT * FROM clientes WHERE id = ?", (client_id,)).fetchone()
+                if not client:
+                    bot.send_message(message.chat.id, f"❌ No existe cliente con ID {client_id}")
+                    return
+
+                # Last 5 orders
+                orders = conn.execute("""
+                    SELECT id, producto, cantidad, precio_venta, estado, estado_pago, fecha
+                    FROM pedidos WHERE cliente_id = ? ORDER BY id DESC LIMIT 5
+                """, (client_id,)).fetchall()
+
+                # Total billed
+                totals = conn.execute("""
+                    SELECT COALESCE(SUM(cantidad * precio_venta), 0) as total_vendido,
+                           COALESCE(SUM(cantidad * (precio_venta - costo_compra)), 0) as total_utilidad,
+                           COUNT(*) as num_pedidos
+                    FROM pedidos WHERE cliente_id = ?
+                """, (client_id,)).fetchone()
+
+                # Last 3 notes
+                notes = conn.execute("""
+                    SELECT texto, fecha FROM notas_cliente WHERE cliente_id = ? ORDER BY id DESC LIMIT 3
+                """, (client_id,)).fetchall()
+            finally:
+                conn.close()
+
+            # Build profile
+            state_icon = "✅" if client["estado"] == "Activo" else "⏳"
+            phone = sanitize_phone_co(client["telefono"])
+            wa_url = f"https://wa.me/{phone}"
+
+            days_since = ""
+            if client["ultima_interaccion"]:
+                delta = (date.today() - date.fromisoformat(client["ultima_interaccion"])).days
+                days_since = f" ({delta} días)"
+
+            response = f"📋 <b>FICHA DEL CLIENTE</b>\n"
+            response += "━" * 30 + "\n\n"
+
+            response += f"{state_icon} <b>{client['nombre']}</b> (ID: {client_id})\n"
+            response += f"📱 {client['telefono'] or 'N/A'} | 🏪 {client['tipo_negocio'] or 'N/A'}\n"
+            response += f"📍 {client['direccion'] or 'N/A'}\n"
+            if client["dia_visita"]:
+                response += f"📅 Día de visita: <b>{client['dia_visita']}</b>\n"
+            if client["latitud"]:
+                maps_url = f"https://www.google.com/maps?q={client['latitud']},{client['longitud']}"
+                response += f"📌 <a href='{maps_url}'>Ver en Google Maps</a>\n"
+            response += f"📲 <a href='{wa_url}'>Contactar por WhatsApp</a>\n"
+            response += f"📅 Registro: {client['fecha_registro']} | Última interacción: {client['ultima_interaccion']}{days_since}\n\n"
+
+            # Financials
+            response += f"💰 <b>Total facturado:</b> ${totals['total_vendido']:,.0f}\n"
+            response += f"📈 <b>Utilidad generada:</b> ${totals['total_utilidad']:,.0f}\n"
+            response += f"📦 <b>Pedidos totales:</b> {totals['num_pedidos']}\n\n"
+
+            # Orders
+            if orders:
+                response += "📦 <b>Últimos pedidos:</b>\n"
+                for o in orders:
+                    total = o["cantidad"] * o["precio_venta"]
+                    pay_icon = "🟢" if o["estado_pago"] == "Pagado" else "🔴"
+                    response += f"  #{o['id']} | {o['cantidad']}x {o['producto']} | ${total:,.0f} | {o['estado']} {pay_icon}\n"
+                response += "\n"
+
+            # Notes
+            if notes:
+                response += "📝 <b>Últimas notas:</b>\n"
+                for n in notes:
+                    response += f"  • [{n['fecha']}] {n['texto']}\n"
+                response += "\n"
+
+            response += f"💡 Comandos rápidos:\n"
+            response += f"  /nota {client_id} — Agregar nota\n"
+            response += f"  /repetir {client_id} — Repetir último pedido\n"
+            response += f"  /asignar_dia — Cambiar día de visita"
+
+            bot.send_message(message.chat.id, response, disable_web_page_preview=True)
+        except ValueError:
+            bot.send_message(message.chat.id, "❌ ID inválido.")
+        except Exception as e:
+            bot.send_message(message.chat.id, f"⚠️ Error: {e}")
+
+    # --------------- /seguimiento ---------------
+
+    @bot.message_handler(commands=["seguimiento"])
+    def cmd_pipeline(message):
+        if not is_admin(message):
+            return
+        try:
+            conn = get_connection()
+            try:
+                states = conn.execute("""
+                    SELECT estado, COUNT(*) as c FROM clientes GROUP BY estado ORDER BY
+                    CASE estado
+                        WHEN 'Prospecto' THEN 1
+                        WHEN 'Activo' THEN 2
+                        WHEN 'VIP' THEN 3
+                        WHEN 'Inactivo' THEN 4
+                        ELSE 5
+                    END
+                """).fetchall()
+
+                total = sum(row["c"] for row in states)
+
+                # VIP candidates (clients with 3+ orders)
+                vip_candidates = conn.execute("""
+                    SELECT c.id, c.nombre, COUNT(p.id) as num_orders
+                    FROM clientes c JOIN pedidos p ON c.id = p.cliente_id
+                    WHERE c.estado = 'Activo'
+                    GROUP BY c.id HAVING num_orders >= 3
+                    ORDER BY num_orders DESC LIMIT 5
+                """).fetchall()
+
+                # Inactive candidates (active clients, no orders in 30 days)
+                cutoff_30 = (date.today() - timedelta(days=30)).isoformat()
+                inactive_candidates = conn.execute("""
+                    SELECT c.id, c.nombre, c.ultima_interaccion
+                    FROM clientes c WHERE c.estado = 'Activo'
+                    AND NOT EXISTS (SELECT 1 FROM pedidos p WHERE p.cliente_id = c.id AND p.fecha >= ?)
+                """, (cutoff_30,)).fetchall()
+            finally:
+                conn.close()
+
+            state_emojis = {
+                "Prospecto": "⏳", "Activo": "✅", "VIP": "🏆", "Inactivo": "💤"
+            }
+
+            response = "📊 <b>PIPELINE COMERCIAL</b>\n"
+            response += "━" * 30 + "\n\n"
+            response += f"👥 Total clientes: <b>{total}</b>\n\n"
+
+            for row in states:
+                emoji = state_emojis.get(row["estado"], "⬜")
+                bar_len = int((row["c"] / total) * 15) if total > 0 else 0
+                bar = "█" * bar_len + "░" * (15 - bar_len)
+                response += f"{emoji} <b>{row['estado']}</b>: {row['c']}\n"
+                response += f"   <code>{bar}</code>\n\n"
+
+            if vip_candidates:
+                response += "🏆 <b>CANDIDATOS A VIP</b> (3+ compras):\n"
+                for v in vip_candidates:
+                    response += f"  ⭐ {v['nombre']} — {v['num_orders']} pedidos\n"
+                response += "\n"
+
+            if inactive_candidates:
+                response += "💤 <b>RIESGO DE INACTIVIDAD</b> (0 pedidos en 30 días):\n"
+                for ic in inactive_candidates:
+                    response += f"  ⚠️ {ic['nombre']} — Último: {ic['ultima_interaccion']}\n"
+
+            bot.send_message(message.chat.id, response)
+        except Exception as e:
+            bot.send_message(message.chat.id, f"⚠️ Error: {e}")
 
 
 # =========================================================================

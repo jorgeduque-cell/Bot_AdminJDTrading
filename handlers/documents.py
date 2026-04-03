@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Handlers: Document Generation (PDFs)
-Commands: /remision, /despacho_jd
+Commands: /remision, /despacho_jd, /precios, /precios_set, /cotizar
 """
 import io
 from telebot import types
@@ -19,7 +19,7 @@ from config import (
     COMPANY_PHONE, COMPANY_EMAIL, OWNER_NAME, OWNER_CC
 )
 from database import get_connection
-from utils import is_admin
+from utils import is_admin, sanitize_phone_co
 
 
 def register(bot):
@@ -264,6 +264,209 @@ def register(bot):
         except Exception as e:
             bot.send_message(message.chat.id, f"⚠️ Error: {e}")
 
+    # --------------- /precios ---------------
+
+    @bot.message_handler(commands=["precios"])
+    def cmd_prices(message):
+        if not is_admin(message):
+            return
+        try:
+            conn = get_connection()
+            try:
+                prices = conn.execute("SELECT * FROM precios ORDER BY producto").fetchall()
+            finally:
+                conn.close()
+
+            if not prices or all(p["precio_venta"] == 0 for p in prices):
+                bot.send_message(
+                    message.chat.id,
+                    "⚠️ No tienes precios configurados aún.\n\n"
+                    "Usa /precios_set para configurarlos.\n"
+                    "Ej: <code>/precios_set Caja Oleosoberano,85000,95000</code>\n"
+                    "Formato: producto,costo,venta"
+                )
+                return
+
+            # Send text summary
+            response = f"💰 <b>LISTA DE PRECIOS — {COMPANY_NAME}</b>\n"
+            response += f"📅 Actualizado: {prices[0]['fecha_actualizacion']}\n"
+            response += "━" * 30 + "\n\n"
+
+            for p in prices:
+                if p["precio_venta"] > 0:
+                    margin = ((p["precio_venta"] - p["precio_compra"]) / p["precio_venta"] * 100) if p["precio_venta"] > 0 else 0
+                    response += f"📦 <b>{p['producto']}</b>\n"
+                    response += f"   💲 Costo: ${p['precio_compra']:,.0f} | Venta: <b>${p['precio_venta']:,.0f}</b> | Margen: {margin:.0f}%\n\n"
+
+            response += "📝 Editar: /precios_set [producto,costo,venta]\n"
+            response += "📄 Generar PDF: respondiendo 'pdf'"
+
+            bot.send_message(message.chat.id, response)
+
+            # Generate PDF price list
+            generate_price_list_pdf(bot, message, prices)
+        except Exception as e:
+            bot.send_message(message.chat.id, f"⚠️ Error: {e}")
+
+    # --------------- /precios_set ---------------
+
+    @bot.message_handler(commands=["precios_set"])
+    def cmd_prices_set(message):
+        if not is_admin(message):
+            return
+        try:
+            text = message.text.replace("/precios_set", "").strip()
+            if not text:
+                bot.send_message(
+                    message.chat.id,
+                    "❌ Uso: /precios_set [producto,costo,venta]\n\n"
+                    "Ejemplos:\n"
+                    "<code>/precios_set Caja Oleosoberano,85000,95000</code>\n"
+                    "<code>/precios_set Bidon 18L,70000,82000</code>\n"
+                    "<code>/precios_set Bidon 20L,78000,90000</code>"
+                )
+                return
+
+            parts = text.rsplit(",", 2)
+            if len(parts) != 3:
+                bot.send_message(message.chat.id, "❌ Formato: producto,costo,venta")
+                return
+
+            product_name = parts[0].strip()
+            cost = float(parts[1].strip().replace(",", ""))
+            price = float(parts[2].strip().replace(",", ""))
+
+            from datetime import date as d
+            today = d.today().isoformat()
+
+            conn = get_connection()
+            try:
+                existing = conn.execute("SELECT id FROM precios WHERE producto = ?", (product_name,)).fetchone()
+                if existing:
+                    conn.execute(
+                        "UPDATE precios SET precio_compra = ?, precio_venta = ?, fecha_actualizacion = ? WHERE producto = ?",
+                        (cost, price, today, product_name)
+                    )
+                else:
+                    conn.execute(
+                        "INSERT INTO precios (producto, precio_compra, precio_venta, fecha_actualizacion) VALUES (?, ?, ?, ?)",
+                        (product_name, cost, price, today)
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+
+            margin = ((price - cost) / price * 100) if price > 0 else 0
+            bot.send_message(
+                message.chat.id,
+                f"✅ <b>Precio actualizado</b>\n\n"
+                f"📦 {product_name}\n"
+                f"💲 Costo: ${cost:,.0f}\n"
+                f"💰 Venta: <b>${price:,.0f}</b>\n"
+                f"📈 Margen: {margin:.0f}%"
+            )
+        except ValueError:
+            bot.send_message(message.chat.id, "❌ Valores inválidos. Usa números.")
+        except Exception as e:
+            bot.send_message(message.chat.id, f"⚠️ Error: {e}")
+
+    # --------------- /cotizar ---------------
+
+    @bot.message_handler(commands=["cotizar"])
+    def cmd_quote(message):
+        if not is_admin(message):
+            return
+        try:
+            conn = get_connection()
+            try:
+                prices = conn.execute("SELECT * FROM precios WHERE precio_venta > 0 ORDER BY producto").fetchall()
+            finally:
+                conn.close()
+
+            if not prices:
+                bot.send_message(message.chat.id, "⚠️ Primero configura precios con /precios_set")
+                return
+
+            markup = types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
+            markup.add("📅 Clientes registrados HOY")
+            markup.add("👤 Un cliente específico (por ID)")
+            markup.add("👥 Todos los prospectos")
+            markup.add("❌ Cancelar")
+
+            bot.send_message(
+                message.chat.id,
+                "📲 <b>ENVIAR COTIZACIÓN POR WHATSAPP</b>\n\n"
+                "¿A quién deseas enviarle la lista de precios?",
+                reply_markup=markup
+            )
+            bot.register_next_step_handler(message, step_quote_target, prices)
+        except Exception as e:
+            bot.send_message(message.chat.id, f"⚠️ Error: {e}")
+
+    def step_quote_target(message, prices):
+        if not is_admin(message):
+            return
+        try:
+            selected = message.text.strip()
+            if "Cancelar" in selected:
+                bot.send_message(message.chat.id, "❌ Cancelado.", reply_markup=types.ReplyKeyboardRemove())
+                return
+
+            from datetime import date as d
+            today = d.today().isoformat()
+
+            conn = get_connection()
+            try:
+                if "HOY" in selected:
+                    clients = conn.execute(
+                        "SELECT id, nombre, telefono FROM clientes WHERE fecha_registro = ? AND telefono IS NOT NULL",
+                        (today,)
+                    ).fetchall()
+                    label = "registrados hoy"
+                elif "específico" in selected:
+                    bot.send_message(message.chat.id, "✍️ Escribe el <b>ID del cliente</b>:", reply_markup=types.ReplyKeyboardRemove())
+                    bot.register_next_step_handler(message, step_quote_single_client, prices)
+                    return
+                elif "prospectos" in selected:
+                    clients = conn.execute(
+                        "SELECT id, nombre, telefono FROM clientes WHERE estado = 'Prospecto' AND telefono IS NOT NULL"
+                    ).fetchall()
+                    label = "prospectos"
+                else:
+                    clients = []
+                    label = "desconocido"
+            finally:
+                conn.close()
+
+            if not clients:
+                bot.send_message(message.chat.id, f"📭 No hay clientes {label} con teléfono.", reply_markup=types.ReplyKeyboardRemove())
+                return
+
+            send_quote_links(bot, message, clients, prices, label)
+        except Exception as e:
+            bot.send_message(message.chat.id, f"⚠️ Error: {e}")
+
+    def step_quote_single_client(message, prices):
+        if not is_admin(message):
+            return
+        try:
+            client_id = int(message.text.strip())
+            conn = get_connection()
+            try:
+                client = conn.execute("SELECT id, nombre, telefono FROM clientes WHERE id = ?", (client_id,)).fetchone()
+            finally:
+                conn.close()
+
+            if not client:
+                bot.send_message(message.chat.id, "❌ Cliente no encontrado.")
+                return
+
+            send_quote_links(bot, message, [client], prices, f"cliente ID {client_id}")
+        except ValueError:
+            bot.send_message(message.chat.id, "❌ ID inválido.")
+        except Exception as e:
+            bot.send_message(message.chat.id, f"⚠️ Error: {e}")
+
 
 # =========================================================================
 # PDF GENERATION (module-level)
@@ -437,3 +640,108 @@ def generate_venco_dispatch_pdf(bot, message, dispatch_data):
         bot.send_message(message.chat.id, "✅ Documento de despacho generado exitosamente.")
     except Exception as e:
         bot.send_message(message.chat.id, f"⚠️ Error al generar despacho: {e}")
+
+
+def generate_price_list_pdf(bot, message, prices):
+    """Generate a professional PDF price list for JD Trading Oil."""
+    try:
+        now = datetime.now()
+        today_str = now.strftime("%d/%m/%Y")
+
+        buffer = io.BytesIO()
+        page_w, page_h = 140 * mm, 200 * mm
+        doc = SimpleDocTemplate(buffer, pagesize=(page_w, page_h),
+                                leftMargin=10*mm, rightMargin=10*mm, topMargin=10*mm, bottomMargin=10*mm)
+
+        styles = getSampleStyleSheet()
+        title_style = ParagraphStyle("PriceTitle", parent=styles["Title"], fontSize=14, alignment=TA_CENTER, fontName="Helvetica-Bold")
+        sub_style = ParagraphStyle("PriceSub", parent=styles["Normal"], fontSize=9, alignment=TA_CENTER, textColor=colors.gray)
+        footer_style = ParagraphStyle("PriceFooter", parent=styles["Normal"], fontSize=7, alignment=TA_CENTER, textColor=colors.gray, fontName="Helvetica-Oblique")
+
+        jd_blue = colors.Color(0.1, 0.3, 0.6)
+        jd_blue_bg = colors.Color(0.85, 0.9, 1.0)
+
+        elements = []
+
+        # Header
+        elements.append(Paragraph(f"<b>{COMPANY_NAME}</b>", title_style))
+        elements.append(Paragraph("Distribuidora de Aceites Vegetales & Hidrogenados", sub_style))
+        elements.append(Spacer(1, 3*mm))
+        elements.append(Paragraph(f"<b>LISTA DE PRECIOS</b>", ParagraphStyle("PriceListTitle", parent=styles["Title"], fontSize=16, alignment=TA_CENTER, textColor=jd_blue)))
+        elements.append(Paragraph(f"Vigente: {today_str}", sub_style))
+        elements.append(Spacer(1, 5*mm))
+
+        # Price table
+        table_data = [["Producto", "Presentación", "Precio Unitario"]]
+        for p in prices:
+            if p["precio_venta"] > 0:
+                table_data.append([
+                    p["producto"],
+                    "Unidad",
+                    f"${p['precio_venta']:,.0f}"
+                ])
+
+        full_width = page_w - 20*mm
+        t = Table(table_data, colWidths=[full_width*0.45, full_width*0.25, full_width*0.30])
+        t.setStyle(TableStyle([
+            ("GRID", (0,0), (-1,-1), 0.5, jd_blue),
+            ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
+            ("FONTSIZE", (0,0), (-1,-1), 10),
+            ("ALIGN", (2,0), (2,-1), "RIGHT"),
+            ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+            ("BACKGROUND", (0,0), (-1,0), jd_blue_bg),
+            ("LEFTPADDING", (0,0), (-1,-1), 3*mm),
+            ("TOPPADDING", (0,0), (-1,-1), 3*mm),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 3*mm),
+            ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, colors.Color(0.95, 0.95, 0.95)]),
+        ]))
+        elements.append(t)
+        elements.append(Spacer(1, 8*mm))
+
+        # Contact info
+        elements.append(Paragraph(f"<b>Contacto:</b> {COMPANY_PHONE}", ParagraphStyle("Contact", parent=styles["Normal"], fontSize=9, alignment=TA_CENTER)))
+        elements.append(Paragraph(f"<b>Dirección:</b> {COMPANY_ADDRESS}, {COMPANY_CITY}", ParagraphStyle("Addr", parent=styles["Normal"], fontSize=9, alignment=TA_CENTER)))
+        elements.append(Spacer(1, 3*mm))
+        elements.append(Paragraph("* Precios sujetos a cambio sin previo aviso", footer_style))
+        elements.append(Paragraph("* Precios NO incluyen flete de entrega", footer_style))
+
+        doc.build(elements)
+        buffer.seek(0)
+
+        bot.send_document(
+            message.chat.id, buffer,
+            visible_file_name=f"Lista_Precios_JDTrading_{now.strftime('%Y%m%d')}.pdf",
+            caption=f"📄 Lista de Precios — {COMPANY_NAME} — {today_str}"
+        )
+    except Exception as e:
+        bot.send_message(message.chat.id, f"⚠️ Error al generar PDF de precios: {e}")
+
+
+def send_quote_links(bot, message, clients, prices, label):
+    """Generate WhatsApp links with pre-built price quote message for each client."""
+    try:
+        # Build the price text for the WhatsApp message
+        price_lines = []
+        for p in prices:
+            if p["precio_venta"] > 0:
+                price_lines.append(f"📦 {p['producto']}: ${p['precio_venta']:,.0f}")
+
+        price_text = "%0A".join(price_lines).replace(" ", "%20").replace("$", "%24").replace(",", "%2C")
+
+        greeting = f"Buenos%20d%C3%ADa,%20le%20saluda%20{OWNER_NAME.split()[0]}%20de%20{COMPANY_NAME.replace(' ', '%20')}.%0A%0ALe%20comparto%20nuestra%20lista%20de%20precios%20del%20d%C3%ADa:%0A%0A{price_text}%0A%0A%C2%BFLe%20interesa%20hacer%20un%20pedido%3F%20Estoy%20a%20su%20disposici%C3%B3n.%20%F0%9F%91%8D"
+
+        response = f"📲 <b>COTIZACIONES — {label.upper()}</b>\n"
+        response += "━" * 30 + "\n"
+        response += f"👥 {len(clients)} cliente(s)\n\n"
+
+        for c in clients:
+            phone = sanitize_phone_co(c["telefono"])
+            wa_url = f"https://wa.me/{phone}?text={greeting}"
+            response += f"👤 <b>{c['nombre']}</b>\n"
+            response += f"   📲 <a href='{wa_url}'>Enviar cotización por WhatsApp</a>\n\n"
+
+        response += "💡 <i>Cada link abre WhatsApp con tu lista de precios pre-escrita.</i>"
+
+        bot.send_message(message.chat.id, response, reply_markup=types.ReplyKeyboardRemove(), disable_web_page_preview=True)
+    except Exception as e:
+        bot.send_message(message.chat.id, f"⚠️ Error: {e}")

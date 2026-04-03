@@ -43,22 +43,42 @@ def set_bot_commands():
     """Register all commands in the Telegram menu."""
     commands = [
         types.BotCommand("start", "🏢 Panel principal"),
+        # CRM
         types.BotCommand("nuevo_cliente", "Registrar nuevo cliente"),
         types.BotCommand("clientes", "👥 Ver cartera de clientes"),
         types.BotCommand("buscar", "🔍 Buscar cliente"),
-        types.BotCommand("vender", "Crear pedido de venta"),
-        types.BotCommand("pedidos", "📦 Ver pedidos"),
+        types.BotCommand("ficha", "📋 Perfil completo del cliente"),
+        types.BotCommand("nota", "📝 Agregar nota de visita"),
+        types.BotCommand("seguimiento", "📊 Pipeline comercial"),
         types.BotCommand("radar", "Inteligencia comercial"),
+        types.BotCommand("asignar_dia", "📅 Asignar día de visita"),
+        # Ventas
+        types.BotCommand("vender", "Crear pedido de venta"),
+        types.BotCommand("repetir", "🔄 Repetir último pedido"),
+        types.BotCommand("pedidos", "📦 Ver pedidos"),
+        types.BotCommand("entregar", "Marcar pedido como entregado"),
+        types.BotCommand("cobrar", "💳 Cobros pendientes + WhatsApp"),
+        types.BotCommand("pagar", "✅ Marcar pedido como pagado"),
+        # Precios & Cotizaciones
+        types.BotCommand("precios", "💰 Lista de precios + PDF"),
+        types.BotCommand("precios_set", "Actualizar precios"),
+        types.BotCommand("cotizar", "📲 Enviar cotización WhatsApp"),
+        # Logística
         types.BotCommand("ruta_semanal", "📅 Ruta fija semanal"),
         types.BotCommand("ruta_pie", "Radar de prospección territorial"),
         types.BotCommand("ruta_camion", "Ruta vehicular de entregas"),
         types.BotCommand("inventario", "📦 Control de stock"),
+        # Documentos
         types.BotCommand("remision", "Generar remisión PDF"),
         types.BotCommand("despacho_jd", "Despacho formal de bodega"),
+        # Finanzas
         types.BotCommand("gasto", "Registrar gasto operativo"),
-        types.BotCommand("entregar", "Marcar pedido como entregado"),
         types.BotCommand("caja", "Estado de resultados financiero"),
-        types.BotCommand("asignar_dia", "📅 Asignar día de visita"),
+        types.BotCommand("cuentas_por_cobrar", "💳 Cartera por cobrar"),
+        types.BotCommand("margen", "📊 Análisis de rentabilidad"),
+        types.BotCommand("meta", "🎯 Meta semanal de ventas"),
+        types.BotCommand("meta_set", "Configurar meta semanal"),
+        # Admin
         types.BotCommand("editar", "✏️ Editar un registro"),
         types.BotCommand("eliminar", "🗑️ Eliminar un registro"),
         types.BotCommand("backup", "💾 Respaldar base de datos"),

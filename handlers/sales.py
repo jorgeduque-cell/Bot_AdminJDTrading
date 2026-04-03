@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Handlers: Sales & Orders
-Commands: /vender, /pedidos, /entregar
+Commands: /vender, /pedidos, /entregar, /cobrar, /repetir
 Note: Stock validation was intentionally removed (business does not manage stock).
 """
 from telebot import types
@@ -9,7 +9,7 @@ from datetime import date
 
 from config import PRODUCT_CATALOG
 from database import get_connection
-from utils import is_admin, safe_split
+from utils import is_admin, safe_split, sanitize_phone_co
 
 
 def register(bot):
@@ -282,5 +282,188 @@ def register(bot):
             )
         except ValueError:
             bot.send_message(message.chat.id, "❌ ID inválido. Uso: /entregar [ID_Pedido]")
+        except Exception as e:
+            bot.send_message(message.chat.id, f"⚠️ Error: {e}")
+
+    # --------------- /cobrar ---------------
+
+    @bot.message_handler(commands=["cobrar"])
+    def cmd_collect(message):
+        if not is_admin(message):
+            return
+        try:
+            conn = get_connection()
+            try:
+                unpaid = conn.execute("""
+                    SELECT p.id, p.producto, p.cantidad, p.precio_venta, p.fecha,
+                           c.nombre, c.telefono,
+                           (p.cantidad * p.precio_venta) as total
+                    FROM pedidos p JOIN clientes c ON p.cliente_id = c.id
+                    WHERE p.estado = 'Entregado' AND (p.estado_pago IS NULL OR p.estado_pago = 'Pendiente')
+                    ORDER BY p.fecha ASC
+                """).fetchall()
+            finally:
+                conn.close()
+
+            if not unpaid:
+                bot.send_message(message.chat.id, "✅ ¡No hay cobros pendientes! Todos tus clientes están al día.")
+                return
+
+            total_pending = sum(row["total"] for row in unpaid)
+
+            response = f"💳 <b>COBROS PENDIENTES</b>\n"
+            response += "━" * 30 + "\n"
+            response += f"💰 Total por cobrar: <b>${total_pending:,.0f}</b>\n"
+            response += f"📦 Pedidos sin pagar: <b>{len(unpaid)}</b>\n\n"
+
+            for row in unpaid:
+                phone = sanitize_phone_co(row["telefono"])
+                days_ago = (date.today() - date.fromisoformat(row["fecha"])).days
+                urgency = "🔴" if days_ago > 7 else ("🟡" if days_ago > 3 else "🟢")
+
+                wa_msg = f"Buenos días {row['nombre']}, le recuerdo que tiene pendiente el pedido #{row['id']} por ${row['total']:,.0f} ({row['cantidad']}x {row['producto']}). ¿Cuándo podemos coordinar el pago?"
+                wa_url = f"https://wa.me/{phone}?text={wa_msg.replace(' ', '%20').replace('#', '%23')}"
+
+                response += f"{urgency} <b>#{row['id']}</b> — {row['nombre']}\n"
+                response += f"   📦 {row['cantidad']}x {row['producto']} | ${row['total']:,.0f}\n"
+                response += f"   📅 {row['fecha']} ({days_ago} días)\n"
+                response += f"   📲 <a href='{wa_url}'>Cobrar por WhatsApp</a>\n\n"
+
+            response += "\n💡 Usa /pagar [ID_Pedido] para marcar como pagado."
+
+            bot.send_message(message.chat.id, response, disable_web_page_preview=True)
+        except Exception as e:
+            bot.send_message(message.chat.id, f"⚠️ Error: {e}")
+
+    # --------------- /pagar ---------------
+
+    @bot.message_handler(commands=["pagar"])
+    def cmd_pay(message):
+        if not is_admin(message):
+            return
+        try:
+            parts = message.text.strip().split()
+            if len(parts) < 2:
+                bot.send_message(message.chat.id, "❌ Uso: /pagar [ID_Pedido]")
+                return
+
+            order_id = int(parts[1])
+            conn = get_connection()
+            try:
+                order = conn.execute("""
+                    SELECT p.*, c.nombre FROM pedidos p JOIN clientes c ON p.cliente_id = c.id WHERE p.id = ?
+                """, (order_id,)).fetchone()
+
+                if not order:
+                    bot.send_message(message.chat.id, "❌ Pedido no encontrado.")
+                    return
+
+                if order["estado_pago"] == "Pagado":
+                    bot.send_message(message.chat.id, "ℹ️ Este pedido ya está marcado como pagado.")
+                    return
+
+                conn.execute("UPDATE pedidos SET estado_pago = 'Pagado' WHERE id = ?", (order_id,))
+                conn.commit()
+            finally:
+                conn.close()
+
+            total = order["cantidad"] * order["precio_venta"]
+            bot.send_message(
+                message.chat.id,
+                f"✅ <b>Pago registrado</b>\n\n"
+                f"📦 Pedido #{order_id} — {order['nombre']}\n"
+                f"💰 ${total:,.0f} — <b>PAGADO ✅</b>"
+            )
+        except ValueError:
+            bot.send_message(message.chat.id, "❌ ID inválido.")
+        except Exception as e:
+            bot.send_message(message.chat.id, f"⚠️ Error: {e}")
+
+    # --------------- /repetir ---------------
+
+    @bot.message_handler(commands=["repetir"])
+    def cmd_repeat(message):
+        if not is_admin(message):
+            return
+        try:
+            parts = message.text.strip().split()
+            if len(parts) < 2:
+                bot.send_message(message.chat.id, "❌ Uso: /repetir [ID_Cliente]")
+                return
+
+            client_id = int(parts[1])
+            conn = get_connection()
+            try:
+                client = conn.execute("SELECT nombre FROM clientes WHERE id = ?", (client_id,)).fetchone()
+                if not client:
+                    bot.send_message(message.chat.id, "❌ Cliente no encontrado.")
+                    return
+
+                last_order = conn.execute("""
+                    SELECT producto, cantidad, costo_compra, precio_venta, tipo_carga, peso_kg
+                    FROM pedidos WHERE cliente_id = ? ORDER BY id DESC LIMIT 1
+                """, (client_id,)).fetchone()
+            finally:
+                conn.close()
+
+            if not last_order:
+                bot.send_message(message.chat.id, f"❌ {client['nombre']} no tiene pedidos anteriores.")
+                return
+
+            total = last_order["cantidad"] * last_order["precio_venta"]
+
+            markup = types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
+            markup.add("✅ Sí, repetir pedido", "❌ No, cancelar")
+
+            bot.send_message(
+                message.chat.id,
+                f"🔄 <b>REPETIR ÚLTIMO PEDIDO</b>\n\n"
+                f"👤 Cliente: <b>{client['nombre']}</b>\n"
+                f"📦 {last_order['cantidad']}x {last_order['producto']}\n"
+                f"💲 Costo: ${last_order['costo_compra']:,.0f} c/u\n"
+                f"💰 Venta: ${last_order['precio_venta']:,.0f} c/u\n"
+                f"💵 Total: <b>${total:,.0f}</b>\n\n"
+                "¿Confirmar?",
+                reply_markup=markup
+            )
+            bot.register_next_step_handler(message, step_repeat_confirm, client_id, client["nombre"], last_order)
+        except ValueError:
+            bot.send_message(message.chat.id, "❌ ID inválido.")
+        except Exception as e:
+            bot.send_message(message.chat.id, f"⚠️ Error: {e}")
+
+    def step_repeat_confirm(message, client_id, client_name, last_order):
+        if not is_admin(message):
+            return
+        try:
+            if "Sí" not in message.text:
+                bot.send_message(message.chat.id, "❌ Cancelado.", reply_markup=types.ReplyKeyboardRemove())
+                return
+
+            today = date.today().isoformat()
+            conn = get_connection()
+            try:
+                cursor = conn.execute(
+                    """INSERT INTO pedidos (cliente_id, producto, tipo_carga, cantidad, peso_kg, costo_compra, precio_venta, estado, fecha)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, 'Pendiente', ?)""",
+                    (client_id, last_order["producto"], last_order["tipo_carga"],
+                     last_order["cantidad"], last_order["peso_kg"],
+                     last_order["costo_compra"], last_order["precio_venta"], today)
+                )
+                conn.execute("UPDATE clientes SET estado = 'Activo', ultima_interaccion = ? WHERE id = ?", (today, client_id))
+                conn.commit()
+                order_id = cursor.lastrowid
+            finally:
+                conn.close()
+
+            total = last_order["cantidad"] * last_order["precio_venta"]
+            bot.send_message(
+                message.chat.id,
+                f"✅ <b>Pedido #{order_id} creado (recompra)</b>\n\n"
+                f"👤 {client_name}\n"
+                f"📦 {last_order['cantidad']}x {last_order['producto']}\n"
+                f"💵 Total: <b>${total:,.0f}</b>",
+                reply_markup=types.ReplyKeyboardRemove()
+            )
         except Exception as e:
             bot.send_message(message.chat.id, f"⚠️ Error: {e}")
