@@ -8,7 +8,7 @@ from datetime import date, datetime
 import os
 
 from config import COMPANY_NAME
-from database import get_connection, DB_PATH
+from database import get_connection
 from utils import is_admin, safe_split
 
 
@@ -195,14 +195,33 @@ def register(bot):
         if not is_admin(message):
             return
         try:
-            with open(DB_PATH, "rb") as db_file:
-                bot.send_document(
-                    message.chat.id,
-                    db_file,
-                    visible_file_name=f"jd_trading_backup_{date.today().isoformat()}.db",
-                    caption=f"💾 Respaldo de BD — {datetime.now().strftime('%d/%m/%Y %H:%M')}\n"
-                            f"Tamaño: {os.path.getsize(DB_PATH) / 1024:.1f} KB"
-                )
+            import io
+            conn = get_connection()
+            try:
+                tables = ["clientes", "pedidos", "finanzas", "inventario", "precios", "metas", "notas_cliente"]
+                backup_text = f"-- JD Trading Backup — {datetime.now().strftime('%d/%m/%Y %H:%M')}\n\n"
+
+                for table in tables:
+                    rows = conn.execute(f"SELECT * FROM {table}").fetchall()
+                    backup_text += f"-- TABLE: {table} ({len(rows)} rows)\n"
+                    if rows:
+                        cols = list(rows[0].keys())
+                        backup_text += ",".join(cols) + "\n"
+                        for r in rows:
+                            backup_text += ",".join(str(r[c]) if r[c] is not None else "" for c in cols) + "\n"
+                    backup_text += "\n"
+            finally:
+                conn.close()
+
+            file_bytes = io.BytesIO(backup_text.encode("utf-8"))
+            file_bytes.name = f"jd_trading_backup_{date.today().isoformat()}.csv"
+
+            bot.send_document(
+                message.chat.id,
+                file_bytes,
+                visible_file_name=file_bytes.name,
+                caption=f"💾 Respaldo de BD (Supabase) — {datetime.now().strftime('%d/%m/%Y %H:%M')}"
+            )
         except Exception as e:
             bot.send_message(message.chat.id, f"⚠️ Error al generar backup: {e}")
 

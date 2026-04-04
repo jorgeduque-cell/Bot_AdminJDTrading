@@ -2,9 +2,10 @@
 """
 JD Trading Oil S.A.S — Database Module
 PostgreSQL (Supabase) initialization, migrations, and connection helpers.
+Uses psycopg v3 (modern PostgreSQL adapter).
 """
-import psycopg2
-from psycopg2.extras import RealDictCursor
+import psycopg
+from psycopg.rows import dict_row
 import os
 from datetime import date
 from config import PRODUCT_CATALOG
@@ -13,7 +14,7 @@ DATABASE_URL = os.environ["DATABASE_URL"]  # Required — from Supabase
 
 
 class PgConnection:
-    """Wrapper around psycopg2 connection that mimics sqlite3 interface.
+    """Wrapper around psycopg connection that mimics sqlite3 interface.
     Provides conn.execute() shorthand and dict-like row access."""
 
     def __init__(self, conn):
@@ -21,7 +22,7 @@ class PgConnection:
 
     def execute(self, query, params=None):
         """Execute query and return cursor (supports .fetchone(), .fetchall())."""
-        cursor = self._conn.cursor(cursor_factory=RealDictCursor)
+        cursor = self._conn.cursor(row_factory=dict_row)
         cursor.execute(query, params)
         return cursor
 
@@ -34,13 +35,13 @@ class PgConnection:
 
 def get_connection():
     """Return a wrapped PostgreSQL connection with dict-like rows."""
-    conn = psycopg2.connect(DATABASE_URL)
+    conn = psycopg.connect(DATABASE_URL, autocommit=False)
     return PgConnection(conn)
 
 
 def init_database():
     """Create all tables if they do not exist."""
-    conn = psycopg2.connect(DATABASE_URL)
+    conn = psycopg.connect(DATABASE_URL)
     cursor = conn.cursor()
 
     cursor.execute("""
