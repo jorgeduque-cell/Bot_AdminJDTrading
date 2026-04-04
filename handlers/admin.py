@@ -7,7 +7,7 @@ from telebot import types
 from datetime import date, datetime
 import os
 
-from config import COMPANY_NAME
+from config import COMPANY_NAME, PRODUCT_CATALOG
 from database import get_connection
 from utils import is_admin, safe_split
 
@@ -546,6 +546,8 @@ def register(bot):
         try:
             markup = types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
             markup.add("👤 Editar Cliente")
+            markup.add("📦 Editar Pedido")
+            markup.add("🚫 Cancelar Pedido")
             markup.add("❌ Cancelar")
 
             bot.send_message(message.chat.id, "✏️ <b>EDITAR REGISTRO</b>\n\n¿Qué deseas editar?", reply_markup=markup)
@@ -557,12 +559,268 @@ def register(bot):
         if not is_admin(message):
             return
         try:
-            if "Cancelar" in message.text:
+            selected = message.text.strip()
+            if "Cancelar Pedido" in selected:
+                # Cancel order flow
+                conn = get_connection()
+                try:
+                    orders = conn.execute("""
+                        SELECT p.id, c.nombre, p.producto, p.cantidad, p.estado, p.fecha
+                        FROM pedidos p JOIN clientes c ON p.cliente_id = c.id
+                        WHERE p.estado != 'Cancelado'
+                        ORDER BY p.id DESC LIMIT 20
+                    """).fetchall()
+                finally:
+                    conn.close()
+
+                if not orders:
+                    bot.send_message(message.chat.id, "📦 No hay pedidos activos.", reply_markup=types.ReplyKeyboardRemove())
+                    return
+
+                listing = "🚫 <b>CANCELAR PEDIDO</b>\n\n"
+                for o in orders:
+                    listing += f"  🆔 <b>{o['id']}</b> — {o['nombre']} | {o['cantidad']}x {o['producto']} | {o['estado']} | {o['fecha']}\n"
+                listing += "\n✍️ Escribe el <b>ID</b> del pedido a cancelar:"
+
+                bot.send_message(message.chat.id, listing, reply_markup=types.ReplyKeyboardRemove())
+                bot.register_next_step_handler(message, step_cancel_order_id)
+
+            elif "Editar Pedido" in selected:
+                conn = get_connection()
+                try:
+                    orders = conn.execute("""
+                        SELECT p.id, c.nombre, p.producto, p.cantidad, p.precio_venta, p.estado, p.fecha
+                        FROM pedidos p JOIN clientes c ON p.cliente_id = c.id
+                        WHERE p.estado = 'Pendiente'
+                        ORDER BY p.id DESC LIMIT 20
+                    """).fetchall()
+                finally:
+                    conn.close()
+
+                if not orders:
+                    bot.send_message(message.chat.id, "📦 No hay pedidos pendientes para editar.", reply_markup=types.ReplyKeyboardRemove())
+                    return
+
+                listing = "📦 <b>EDITAR PEDIDO</b>\n<i>Solo pedidos pendientes</i>\n\n"
+                for o in orders:
+                    total = o['cantidad'] * o['precio_venta']
+                    listing += f"  🆔 <b>{o['id']}</b> — {o['nombre']} | {o['cantidad']}x {o['producto']} | ${total:,.0f}\n"
+                listing += "\n✍️ Escribe el <b>ID</b> del pedido a editar:"
+
+                bot.send_message(message.chat.id, listing, reply_markup=types.ReplyKeyboardRemove())
+                bot.register_next_step_handler(message, step_edit_order_id)
+
+            elif "Editar Cliente" in selected:
+                bot.send_message(message.chat.id, "✍️ Escribe el <b>ID del cliente</b> a editar:", reply_markup=types.ReplyKeyboardRemove())
+                bot.register_next_step_handler(message, step_edit_client_id)
+
+            elif "Cancelar" in selected:
+                bot.send_message(message.chat.id, "❌ Cancelado.", reply_markup=types.ReplyKeyboardRemove())
+        except Exception as e:
+            bot.send_message(message.chat.id, f"⚠️ Error: {e}")
+
+    # ── Cancel Order ──
+
+    def step_cancel_order_id(message):
+        if not is_admin(message):
+            return
+        try:
+            order_id = int(message.text.strip())
+            conn = get_connection()
+            try:
+                order = conn.execute("""
+                    SELECT p.id, p.producto, p.cantidad, p.precio_venta, p.estado, c.nombre
+                    FROM pedidos p JOIN clientes c ON p.cliente_id = c.id
+                    WHERE p.id = %s
+                """, (order_id,)).fetchone()
+            finally:
+                conn.close()
+
+            if not order:
+                bot.send_message(message.chat.id, f"❌ No existe pedido #{order_id}")
+                return
+
+            if order["estado"] == "Cancelado":
+                bot.send_message(message.chat.id, f"⚠️ El pedido #{order_id} ya está cancelado.")
+                return
+
+            total = order["cantidad"] * order["precio_venta"]
+            markup = types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
+            markup.add("✅ Sí, cancelar pedido", "❌ No, mantener")
+
+            bot.send_message(
+                message.chat.id,
+                f"🚫 <b>¿Cancelar pedido #{order_id}?</b>\n\n"
+                f"👤 Cliente: {order['nombre']}\n"
+                f"📦 {order['cantidad']}x {order['producto']}\n"
+                f"💰 Total: ${total:,.0f}\n"
+                f"📌 Estado actual: {order['estado']}\n\n"
+                f"⚠️ Se eliminará el registro financiero asociado.",
+                reply_markup=markup
+            )
+            bot.register_next_step_handler(message, step_cancel_order_execute, order_id)
+        except ValueError:
+            bot.send_message(message.chat.id, "❌ ID inválido.")
+        except Exception as e:
+            bot.send_message(message.chat.id, f"⚠️ Error: {e}")
+
+    def step_cancel_order_execute(message, order_id):
+        if not is_admin(message):
+            return
+        try:
+            if "Sí" in message.text:
+                conn = get_connection()
+                try:
+                    conn.execute("UPDATE pedidos SET estado = 'Cancelado' WHERE id = %s", (order_id,))
+                    conn.execute("DELETE FROM finanzas WHERE pedido_id = %s", (order_id,))
+                    conn.commit()
+                finally:
+                    conn.close()
+                bot.send_message(message.chat.id, f"✅ Pedido #{order_id} cancelado exitosamente.", reply_markup=types.ReplyKeyboardRemove())
+            else:
+                bot.send_message(message.chat.id, "❌ Operación cancelada.", reply_markup=types.ReplyKeyboardRemove())
+        except Exception as e:
+            bot.send_message(message.chat.id, f"⚠️ Error: {e}")
+
+    # ── Edit Order ──
+
+    def step_edit_order_id(message):
+        if not is_admin(message):
+            return
+        try:
+            order_id = int(message.text.strip())
+            conn = get_connection()
+            try:
+                order = conn.execute("""
+                    SELECT p.*, c.nombre as cliente_nombre
+                    FROM pedidos p JOIN clientes c ON p.cliente_id = c.id
+                    WHERE p.id = %s AND p.estado = 'Pendiente'
+                """, (order_id,)).fetchone()
+            finally:
+                conn.close()
+
+            if not order:
+                bot.send_message(message.chat.id, f"❌ Pedido #{order_id} no encontrado o no está pendiente.")
+                return
+
+            total = order["cantidad"] * order["precio_venta"]
+            markup = types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
+            markup.add("🔢 Cantidad", "💰 Precio de Venta")
+            markup.add("💲 Costo de Compra", "📦 Producto")
+            markup.add("❌ Cancelar")
+
+            bot.send_message(
+                message.chat.id,
+                f"✏️ <b>Editando Pedido #{order_id}</b>\n\n"
+                f"👤 Cliente: {order['cliente_nombre']}\n"
+                f"📦 Producto: {order['producto']}\n"
+                f"🔢 Cantidad: {order['cantidad']}\n"
+                f"💲 Costo compra: ${order['costo_compra']:,.0f}\n"
+                f"💰 Precio venta: ${order['precio_venta']:,.0f}\n"
+                f"💵 Total: ${total:,.0f}\n\n"
+                f"¿Qué campo deseas editar?",
+                reply_markup=markup
+            )
+            bot.register_next_step_handler(message, step_edit_order_field, order_id)
+        except ValueError:
+            bot.send_message(message.chat.id, "❌ ID inválido.")
+        except Exception as e:
+            bot.send_message(message.chat.id, f"⚠️ Error: {e}")
+
+    def step_edit_order_field(message, order_id):
+        if not is_admin(message):
+            return
+        try:
+            selected = message.text.strip()
+            if "Cancelar" in selected:
                 bot.send_message(message.chat.id, "❌ Cancelado.", reply_markup=types.ReplyKeyboardRemove())
                 return
 
-            bot.send_message(message.chat.id, "✍️ Escribe el <b>ID del cliente</b> a editar:", reply_markup=types.ReplyKeyboardRemove())
-            bot.register_next_step_handler(message, step_edit_client_id)
+            field_map = {
+                "Cantidad": "cantidad",
+                "Precio de Venta": "precio_venta",
+                "Costo de Compra": "costo_compra",
+                "Producto": "producto",
+            }
+
+            db_field = None
+            for key, val in field_map.items():
+                if key in selected:
+                    db_field = val
+                    break
+
+            if not db_field:
+                bot.send_message(message.chat.id, "❌ Campo no válido.", reply_markup=types.ReplyKeyboardRemove())
+                return
+
+            if db_field == "producto":
+                markup = types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
+                for p in PRODUCT_CATALOG:
+                    markup.add(p)
+                bot.send_message(message.chat.id, "📦 Selecciona el nuevo producto:", reply_markup=markup)
+            else:
+                bot.send_message(message.chat.id, f"✍️ Escribe el nuevo valor para <b>{selected}</b>:", reply_markup=types.ReplyKeyboardRemove())
+
+            bot.register_next_step_handler(message, step_edit_order_value, order_id, db_field)
+        except Exception as e:
+            bot.send_message(message.chat.id, f"⚠️ Error: {e}")
+
+    def step_edit_order_value(message, order_id, db_field):
+        if not is_admin(message):
+            return
+        try:
+            new_value = message.text.strip()
+
+            if db_field == "producto":
+                if new_value not in PRODUCT_CATALOG:
+                    bot.send_message(message.chat.id, "❌ Producto no válido.", reply_markup=types.ReplyKeyboardRemove())
+                    return
+                # Also update weight and cargo type
+                product_info = PRODUCT_CATALOG[new_value]
+                conn = get_connection()
+                try:
+                    order = conn.execute("SELECT cantidad FROM pedidos WHERE id = %s", (order_id,)).fetchone()
+                    new_weight = order["cantidad"] * product_info["weight"]
+                    conn.execute(
+                        "UPDATE pedidos SET producto = %s, tipo_carga = %s, peso_kg = %s WHERE id = %s",
+                        (new_value, product_info["cargo_type"], new_weight, order_id)
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+            elif db_field == "cantidad":
+                qty = int(new_value)
+                if qty <= 0:
+                    bot.send_message(message.chat.id, "❌ Debe ser mayor a 0.")
+                    return
+                conn = get_connection()
+                try:
+                    order = conn.execute("SELECT producto FROM pedidos WHERE id = %s", (order_id,)).fetchone()
+                    product_info = PRODUCT_CATALOG.get(order["producto"], {"weight": 0})
+                    new_weight = qty * product_info.get("weight", 0)
+                    conn.execute("UPDATE pedidos SET cantidad = %s, peso_kg = %s WHERE id = %s", (qty, new_weight, order_id))
+                    conn.commit()
+                finally:
+                    conn.close()
+            else:
+                num_value = float(new_value.replace(",", "."))
+                if num_value <= 0:
+                    bot.send_message(message.chat.id, "❌ Debe ser mayor a $0.")
+                    return
+                conn = get_connection()
+                try:
+                    conn.execute(f"UPDATE pedidos SET {db_field} = %s WHERE id = %s", (num_value, order_id))
+                    conn.commit()
+                finally:
+                    conn.close()
+
+            bot.send_message(
+                message.chat.id,
+                f"✅ Pedido #{order_id} actualizado.\n<b>{db_field}</b> → {new_value}",
+                reply_markup=types.ReplyKeyboardRemove()
+            )
+        except ValueError:
+            bot.send_message(message.chat.id, "❌ Valor inválido.")
         except Exception as e:
             bot.send_message(message.chat.id, f"⚠️ Error: {e}")
 

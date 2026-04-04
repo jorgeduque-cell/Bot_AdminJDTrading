@@ -44,119 +44,314 @@ def register(bot):
             finally:
                 conn.close()
 
-            sale_data = {"cliente_id": client_id, "cliente_nombre": client["nombre"]}
-
-            markup = types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
-            markup.add("Caja Oleosoberano", "Bidon 18L", "Bidon 20L")
+            sale_data = {
+                "cliente_id": client_id,
+                "cliente_nombre": client["nombre"],
+                "items": []  # Multi-product list
+            }
 
             bot.send_message(
                 message.chat.id,
-                f"👤 Cliente: <b>{client['nombre']}</b> (activado ✅)\n\nSelecciona el <b>producto</b>:",
-                reply_markup=markup
+                f"👤 Cliente: <b>{client['nombre']}</b> (activado ✅)"
             )
-            bot.register_next_step_handler(message, step_sell_product, sale_data)
+            _ask_product(bot, message, sale_data)
         except ValueError:
             bot.send_message(message.chat.id, "❌ ID inválido. Debe ser un número.")
         except Exception as e:
             bot.send_message(message.chat.id, f"⚠️ Error: {e}")
 
-    def step_sell_product(message, sale_data):
+    # Store sale_data in a chat-level dict for callback access
+    _pending_sales = {}
+
+    def _ask_product(bot, message, sale_data):
+        """Prompt user to select a product."""
+        chat_id = message.chat.id
+        _pending_sales[chat_id] = sale_data  # Always store for callbacks
+
+        item_num = len(sale_data["items"]) + 1
+        markup = types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
+        for p in PRODUCT_CATALOG:
+            markup.add(p)
+
+        bot.send_message(
+            chat_id,
+            f"📦 <b>Producto #{item_num}</b>\nSelecciona el producto:",
+            reply_markup=markup
+        )
+        bot.register_next_step_handler(message, step_sell_product)
+
+    def step_sell_product(message):
         if not is_admin(message):
             return
         try:
+            sale_data = _pending_sales.get(message.chat.id)
+            if not sale_data:
+                bot.send_message(message.chat.id, "⚠️ No hay venta en curso. Usa /vender.")
+                return
+
             product = message.text.strip()
             if product not in PRODUCT_CATALOG:
-                bot.send_message(message.chat.id, "❌ Producto no válido. Usa: Caja Oleosoberano, Bidon 18L o Bidon 20L.")
+                bot.send_message(message.chat.id, "❌ Producto no válido.", reply_markup=types.ReplyKeyboardRemove())
                 return
 
-            sale_data["producto"] = product
-            bot.send_message(message.chat.id, "📦 Escribe la <b>cantidad</b> de unidades:", reply_markup=types.ReplyKeyboardRemove())
-            bot.register_next_step_handler(message, step_sell_quantity, sale_data)
+            # Fetch current prices from DB
+            conn = get_connection()
+            try:
+                db_price = conn.execute("SELECT precio_compra, precio_venta FROM precios WHERE producto = %s", (product,)).fetchone()
+            finally:
+                conn.close()
+
+            current_item = {"producto": product, "db_cost": 0, "db_price": 0}
+            sale_data["_current_item"] = current_item
+
+            if db_price and db_price["precio_venta"] > 0:
+                current_item["db_cost"] = db_price["precio_compra"]
+                current_item["db_price"] = db_price["precio_venta"]
+
+                markup = types.InlineKeyboardMarkup(row_width=1)
+                markup.add(
+                    types.InlineKeyboardButton(
+                        f"✅ Usar: ${db_price['precio_compra']:,.0f} / ${db_price['precio_venta']:,.0f}",
+                        callback_data="sell_useprice"
+                    ),
+                    types.InlineKeyboardButton("💲 Otro precio", callback_data="sell_newprice")
+                )
+                bot.send_message(
+                    message.chat.id,
+                    f"📦 <b>{product}</b>\n\n"
+                    f"💰 Precio registrado:\n"
+                    f"  • Compra: <b>${db_price['precio_compra']:,.0f}</b>\n"
+                    f"  • Venta: <b>${db_price['precio_venta']:,.0f}</b>\n\n"
+                    f"¿Usar este precio o ingresar uno nuevo?",
+                    reply_markup=markup
+                )
+            else:
+                bot.send_message(
+                    message.chat.id,
+                    f"📦 <b>{product}</b>\n⚠️ No tiene precio registrado.\n\n"
+                    f"💲 Escribe el <b>costo de compra unitario</b>:",
+                    reply_markup=types.ReplyKeyboardRemove()
+                )
+                bot.register_next_step_handler(message, step_sell_new_cost)
         except Exception as e:
             bot.send_message(message.chat.id, f"⚠️ Error: {e}")
 
-    def step_sell_quantity(message, sale_data):
-        if not is_admin(message):
-            return
+    @bot.callback_query_handler(func=lambda call: call.data == "sell_useprice")
+    def handle_use_existing_price(call):
+        """User chose to use existing price from DB."""
         try:
-            quantity = int(message.text.strip())
-            if quantity <= 0:
-                bot.send_message(message.chat.id, "❌ La cantidad debe ser mayor a 0.")
+            bot.answer_callback_query(call.id)
+            chat_id = call.message.chat.id
+            sale_data = _pending_sales.get(chat_id)
+            if not sale_data:
+                bot.send_message(chat_id, "⚠️ No hay venta en curso.")
                 return
-            if quantity > 10000:
-                bot.send_message(message.chat.id, "❌ Cantidad demasiado alta (máx 10,000). Verifica el dato.")
-                return
-            sale_data["cantidad"] = quantity
 
-            bot.send_message(message.chat.id, "💲 Escribe el <b>costo de compra unitario</b> de HOY (tu costo):")
-            bot.register_next_step_handler(message, step_sell_cost, sale_data)
-        except ValueError:
-            bot.send_message(message.chat.id, "❌ Cantidad inválida. Debe ser un número entero.")
+            call.message.from_user = call.from_user
+            bot.send_message(chat_id, "📦 Escribe la <b>cantidad</b> de unidades:")
+            bot.register_next_step_handler(call.message, step_sell_quantity)
         except Exception as e:
-            bot.send_message(message.chat.id, f"⚠️ Error: {e}")
+            bot.answer_callback_query(call.id, f"⚠️ Error: {e}")
 
-    def step_sell_cost(message, sale_data):
+    @bot.callback_query_handler(func=lambda call: call.data == "sell_newprice")
+    def handle_new_price(call):
+        """User chose to enter a new price."""
+        try:
+            bot.answer_callback_query(call.id)
+            chat_id = call.message.chat.id
+            sale_data = _pending_sales.get(chat_id)
+            if not sale_data:
+                bot.send_message(chat_id, "⚠️ No hay venta en curso.")
+                return
+
+            call.message.from_user = call.from_user
+            bot.send_message(chat_id, "💲 Escribe el <b>nuevo costo de compra unitario</b>:")
+            bot.register_next_step_handler(call.message, step_sell_new_cost)
+        except Exception as e:
+            bot.answer_callback_query(call.id, f"⚠️ Error: {e}")
+
+    def step_sell_new_cost(message):
         if not is_admin(message):
             return
         try:
+            sale_data = _pending_sales.get(message.chat.id)
+            if not sale_data:
+                return
+
             cost = float(message.text.strip().replace(",", "."))
             if cost <= 0:
                 bot.send_message(message.chat.id, "❌ El costo debe ser mayor a $0.")
                 return
-            sale_data["costo_compra"] = cost
-            bot.send_message(message.chat.id, "💰 Escribe el <b>precio de venta unitario</b> de HOY:")
-            bot.register_next_step_handler(message, step_sell_price, sale_data)
+            sale_data["_current_item"]["db_cost"] = cost
+            bot.send_message(message.chat.id, "💰 Escribe el <b>precio de venta unitario</b>:")
+            bot.register_next_step_handler(message, step_sell_new_price)
         except ValueError:
             bot.send_message(message.chat.id, "❌ Valor inválido. Ingresa un número.")
         except Exception as e:
             bot.send_message(message.chat.id, f"⚠️ Error: {e}")
 
-    def step_sell_price(message, sale_data):
+    def step_sell_new_price(message):
         if not is_admin(message):
             return
         try:
+            sale_data = _pending_sales.get(message.chat.id)
+            if not sale_data:
+                return
+
             price = float(message.text.strip().replace(",", "."))
             if price <= 0:
                 bot.send_message(message.chat.id, "❌ El precio debe ser mayor a $0.")
                 return
-            sale_data["precio_venta"] = price
+            sale_data["_current_item"]["db_price"] = price
 
-            product_info = PRODUCT_CATALOG[sale_data["producto"]]
-            total_weight = sale_data["cantidad"] * product_info["weight"]
-            cargo_type = product_info["cargo_type"]
-            total_sale = sale_data["cantidad"] * price
+            # Update the precios table with new price
+            product_name = sale_data["_current_item"]["producto"]
+            cost = sale_data["_current_item"]["db_cost"]
             today = date.today().isoformat()
 
             conn = get_connection()
             try:
-                cursor = conn.execute(
-                    """INSERT INTO pedidos (cliente_id, producto, tipo_carga, cantidad, peso_kg, costo_compra, precio_venta, estado, fecha)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, 'Pendiente', %s) RETURNING id""",
-                    (sale_data["cliente_id"], sale_data["producto"], cargo_type,
-                     sale_data["cantidad"], total_weight, sale_data["costo_compra"],
-                     price, today)
+                conn.execute(
+                    "UPDATE precios SET precio_compra = %s, precio_venta = %s, fecha_actualizacion = %s WHERE producto = %s",
+                    (cost, price, today, product_name)
                 )
-                order_id = cursor.fetchone()["id"]
                 conn.commit()
             finally:
                 conn.close()
 
             bot.send_message(
                 message.chat.id,
-                f"✅ <b>Pedido #{order_id} Creado</b>\n\n"
-                f"👤 Cliente: {sale_data['cliente_nombre']}\n"
-                f"📦 Producto: {sale_data['producto']}\n"
-                f"🔢 Cantidad: {sale_data['cantidad']}\n"
-                f"⚖️ Peso total: {total_weight:.1f} kg ({cargo_type})\n"
-                f"💲 Costo compra: ${sale_data['costo_compra']:,.0f} c/u\n"
-                f"💰 Precio venta: ${price:,.0f} c/u\n"
-                f"💵 Total venta: <b>${total_sale:,.0f}</b>\n"
-                f"📌 Estado: Pendiente"
+                f"✅ Precio actualizado: <b>{product_name}</b>\n"
+                f"  Compra: ${cost:,.0f} | Venta: ${price:,.0f}\n\n"
+                f"📦 Escribe la <b>cantidad</b> de unidades:"
             )
+            bot.register_next_step_handler(message, step_sell_quantity)
         except ValueError:
             bot.send_message(message.chat.id, "❌ Valor inválido. Ingresa un número.")
         except Exception as e:
             bot.send_message(message.chat.id, f"⚠️ Error: {e}")
+
+    def step_sell_quantity(message):
+        if not is_admin(message):
+            return
+        try:
+            sale_data = _pending_sales.get(message.chat.id)
+            if not sale_data:
+                return
+
+            quantity = int(message.text.strip())
+            if quantity <= 0:
+                bot.send_message(message.chat.id, "❌ La cantidad debe ser mayor a 0.")
+                return
+            if quantity > 10000:
+                bot.send_message(message.chat.id, "❌ Cantidad demasiado alta (máx 10,000).")
+                return
+
+            item = sale_data["_current_item"]
+            item["cantidad"] = quantity
+            product_info = PRODUCT_CATALOG[item["producto"]]
+            item["peso_kg"] = quantity * product_info["weight"]
+            item["tipo_carga"] = product_info["cargo_type"]
+            item["costo_compra"] = item["db_cost"]
+            item["precio_venta"] = item["db_price"]
+
+            sale_data["items"].append(item)
+            sale_data.pop("_current_item", None)
+
+            # Show current cart and ask if add more
+            cart_text = _build_cart_summary(sale_data)
+            markup = types.InlineKeyboardMarkup(row_width=2)
+            markup.add(
+                types.InlineKeyboardButton("➕ Agregar otro producto", callback_data="cart_add"),
+                types.InlineKeyboardButton("✅ Finalizar pedido", callback_data="cart_done"),
+            )
+
+            bot.send_message(message.chat.id, cart_text, reply_markup=markup)
+        except ValueError:
+            bot.send_message(message.chat.id, "❌ Cantidad inválida. Debe ser un número entero.")
+        except Exception as e:
+            bot.send_message(message.chat.id, f"⚠️ Error: {e}")
+
+    def _build_cart_summary(sale_data):
+        """Build a text summary of all items in the cart."""
+        text = f"🛒 <b>CARRITO — {sale_data['cliente_nombre']}</b>\n"
+        text += "━" * 30 + "\n"
+        grand_total = 0
+        for i, item in enumerate(sale_data["items"], 1):
+            subtotal = item["cantidad"] * item["precio_venta"]
+            grand_total += subtotal
+            text += f"\n📦 <b>{i}.</b> {item['producto']}\n"
+            text += f"   {item['cantidad']} uds × ${item['precio_venta']:,.0f} = <b>${subtotal:,.0f}</b>\n"
+        text += "\n" + "━" * 30 + "\n"
+        text += f"💰 <b>TOTAL: ${grand_total:,.0f}</b>"
+        return text
+
+    @bot.callback_query_handler(func=lambda call: call.data in ("cart_add", "cart_done"))
+    def handle_cart_action(call):
+        """Handle cart actions — add more products or finalize."""
+        try:
+            bot.answer_callback_query(call.id)
+            chat_id = call.message.chat.id
+            call.message.from_user = call.from_user
+
+            sale_data = _pending_sales.get(chat_id)
+            if not sale_data:
+                bot.send_message(chat_id, "⚠️ No hay venta en curso. Usa /vender para iniciar.")
+                return
+
+            if call.data == "cart_add":
+                _ask_product(bot, call.message, sale_data)
+            elif call.data == "cart_done":
+                _finalize_sale(bot, call.message, sale_data)
+                _pending_sales.pop(chat_id, None)
+        except Exception as e:
+            bot.answer_callback_query(call.id, f"⚠️ Error: {e}")
+
+    def _finalize_sale(bot, message, sale_data):
+        """Create all orders in the database."""
+        try:
+            today = date.today().isoformat()
+            order_ids = []
+
+            conn = get_connection()
+            try:
+                for item in sale_data["items"]:
+                    cursor = conn.execute(
+                        """INSERT INTO pedidos (cliente_id, producto, tipo_carga, cantidad, peso_kg, costo_compra, precio_venta, estado, fecha)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s, 'Pendiente', %s) RETURNING id""",
+                        (sale_data["cliente_id"], item["producto"], item["tipo_carga"],
+                         item["cantidad"], item["peso_kg"], item["costo_compra"],
+                         item["precio_venta"], today)
+                    )
+                    order_ids.append(cursor.fetchone()["id"])
+                conn.commit()
+            finally:
+                conn.close()
+
+            # Build confirmation
+            text = f"✅ <b>PEDIDO CREADO</b>\n"
+            text += "━" * 30 + "\n"
+            text += f"👤 Cliente: {sale_data['cliente_nombre']}\n"
+            text += f"📋 Pedidos: {', '.join(f'#{oid}' for oid in order_ids)}\n\n"
+
+            grand_total = 0
+            grand_weight = 0
+            for i, item in enumerate(sale_data["items"]):
+                subtotal = item["cantidad"] * item["precio_venta"]
+                grand_total += subtotal
+                grand_weight += item["peso_kg"]
+                text += f"📦 <b>{item['producto']}</b>\n"
+                text += f"   {item['cantidad']} uds × ${item['precio_venta']:,.0f} = ${subtotal:,.0f}\n"
+                text += f"   ⚖️ {item['peso_kg']:.1f} kg | Costo: ${item['costo_compra']:,.0f}/u\n\n"
+
+            text += "━" * 30 + "\n"
+            text += f"💵 <b>Total: ${grand_total:,.0f}</b>\n"
+            text += f"⚖️ Peso total: {grand_weight:.1f} kg\n"
+            text += f"📌 Estado: Pendiente"
+
+            bot.send_message(message.chat.id, text, reply_markup=types.ReplyKeyboardRemove())
+        except Exception as e:
+            bot.send_message(message.chat.id, f"⚠️ Error al crear pedido: {e}")
 
     # --------------- /pedidos ---------------
 
