@@ -211,7 +211,10 @@ def register(bot):
                 state_icon = "⏳" if o["estado"] == "Pendiente" else "✅"
                 pay_icon = ""
                 if o["estado"] == "Entregado":
-                    pay_icon = " 🟢" if o.get("estado_pago") == "Pagado" else " 🔴"
+                    try:
+                        pay_icon = " 🟢" if o["estado_pago"] == "Pagado" else " 🔴"
+                    except (IndexError, KeyError):
+                        pay_icon = " 🔴"
                 response += f"{state_icon} <b>#{o['id']}</b> — {o['cliente_nombre']}\n"
                 response += f"   📦 {o['cantidad']}x {o['producto']}\n"
                 response += f"   💰 ${total:,.0f} | {o['estado']}{pay_icon}\n\n"
