@@ -544,7 +544,10 @@ def register(bot):
 
             days_since = ""
             if client["ultima_interaccion"]:
-                delta = (date.today() - date.fromisoformat(client["ultima_interaccion"])).days
+                dt = client["ultima_interaccion"]
+                if isinstance(dt, str):
+                    dt = date.fromisoformat(dt)
+                delta = (date.today() - dt).days
                 days_since = f" ({delta} días)"
 
             response = f"📋 <b>FICHA DEL CLIENTE</b>\n"

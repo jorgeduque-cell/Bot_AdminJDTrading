@@ -340,7 +340,10 @@ def register(bot):
 
             for row in unpaid:
                 phone = sanitize_phone_co(row["telefono"])
-                days_ago = (date.today() - date.fromisoformat(row["fecha"])).days
+                dt = row["fecha"]
+                if isinstance(dt, str):
+                    dt = date.fromisoformat(dt)
+                days_ago = (date.today() - dt).days
                 urgency = "🔴" if days_ago > 7 else ("🟡" if days_ago > 3 else "🟢")
 
                 wa_msg = f"Buenos días {row['nombre']}, le recuerdo que tiene pendiente el pedido #{row['id']} por ${row['total']:,.0f} ({row['cantidad']}x {row['producto']}). ¿Cuándo podemos coordinar el pago?"

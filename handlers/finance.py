@@ -192,7 +192,10 @@ def register(bot):
             response += f"👥 Clientes con deuda: <b>{len(receivables)}</b>\n\n"
 
             for row in receivables:
-                days = (date.today() - date.fromisoformat(row["pedido_mas_antiguo"])).days
+                dt = row["pedido_mas_antiguo"]
+                if isinstance(dt, str):
+                    dt = date.fromisoformat(dt)
+                days = (date.today() - dt).days
                 urgency = "🔴" if days > 7 else ("🟡" if days > 3 else "🟢")
                 phone = sanitize_phone_co(row["telefono"])
                 wa_url = f"https://wa.me/{phone}"
