@@ -6,6 +6,7 @@ Commands: /gasto, /caja, /cuentas_por_cobrar, /margen, /meta
 from telebot import types
 from datetime import date, timedelta
 
+from config import PRODUCT_CATALOG
 from database import get_connection
 from utils import is_admin, sanitize_phone_co
 
@@ -278,108 +279,250 @@ def register(bot):
             return
         try:
             today = date.today()
-            start_of_week = (today - timedelta(days=today.weekday())).isoformat()
-            end_of_week = (today + timedelta(days=6 - today.weekday())).isoformat()
+            current_month = today.strftime("%Y-%m")
+            month_label = today.strftime("%B %Y").upper()
+            first_day = today.replace(day=1)
+
+            # Calculate week of month (1-4)
+            day_of_month = today.day
+            week_number = min(4, (day_of_month - 1) // 7 + 1)
+            days_in_month = (first_day.replace(month=first_day.month % 12 + 1, day=1) - timedelta(days=1)).day if first_day.month < 12 else 31
+            days_left = days_in_month - day_of_month
 
             conn = get_connection()
             try:
-                # Check if there's a current weekly target
-                current_meta = conn.execute("""
-                    SELECT * FROM metas WHERE tipo = 'semanal' AND fecha_inicio <= ? AND fecha_fin >= ?
-                """, (today.isoformat(), today.isoformat())).fetchone()
+                # Get monthly goals
+                goals = conn.execute("""
+                    SELECT * FROM metas WHERE mes = ? ORDER BY producto
+                """, (current_month,)).fetchall()
 
-                # Current week sales
-                week_sales = conn.execute("""
-                    SELECT COALESCE(SUM(cantidad * precio_venta), 0) as total
-                    FROM pedidos WHERE fecha >= ? AND estado IN ('Pendiente', 'Entregado')
-                """, (start_of_week,)).fetchone()["total"]
+                # Get monthly sales per product
+                sales = conn.execute("""
+                    SELECT producto, COALESCE(SUM(cantidad), 0) as uds_vendidas
+                    FROM pedidos
+                    WHERE fecha >= ? AND estado IN ('Pendiente', 'Entregado')
+                    GROUP BY producto
+                """, (first_day.isoformat(),)).fetchall()
 
-                orders_count = conn.execute("""
+                # Get current prices
+                prices = conn.execute("SELECT producto, precio_venta FROM precios").fetchall()
+
+                # Total orders this month
+                total_orders = conn.execute("""
                     SELECT COUNT(*) as c FROM pedidos WHERE fecha >= ?
-                """, (start_of_week,)).fetchone()["c"]
+                """, (first_day.isoformat(),)).fetchone()["c"]
             finally:
                 conn.close()
 
-            if current_meta:
-                meta_value = current_meta["meta"]
-                progress = (week_sales / meta_value * 100) if meta_value > 0 else 0
-                remaining = max(0, meta_value - week_sales)
-                days_left = (date.fromisoformat(end_of_week) - today).days
+            sales_map = {s["producto"]: s["uds_vendidas"] for s in sales}
+            price_map = {p["producto"]: p["precio_venta"] for p in prices}
+
+            if not goals:
+                response = f"🎯 <b>META MENSUAL — {month_label}</b>\n"
+                response += "━" * 30 + "\n\n"
+                response += "⚠️ No tienes metas configuradas para este mes.\n\n"
+                response += "👇 Presiona un producto para configurar su meta:"
+
+                markup = types.InlineKeyboardMarkup(row_width=1)
+                for product_name in PRODUCT_CATALOG:
+                    sold = sales_map.get(product_name, 0)
+                    markup.add(types.InlineKeyboardButton(
+                        f"🎯 {product_name} ({sold} vendidas)",
+                        callback_data=f"meta_set:{product_name}"
+                    ))
+
+                bot.send_message(message.chat.id, response, reply_markup=markup)
+                return
+
+            # Build the monthly report
+            response = f"🎯 <b>META MENSUAL — {month_label}</b>\n"
+            response += "━" * 30 + "\n"
+            response += f"📅 Semana {week_number}/4 | Quedan {days_left} días\n"
+            response += f"📦 Pedidos del mes: {total_orders}\n\n"
+
+            total_revenue_sold = 0
+            total_revenue_goal = 0
+
+            for g in goals:
+                product = g["producto"]
+                goal_monthly = g["meta_unidades"]
+                goal_weekly = goal_monthly / 4
+                sold = sales_map.get(product, 0)
+                price = price_map.get(product, 0)
+
+                progress = (sold / goal_monthly * 100) if goal_monthly > 0 else 0
+                remaining = max(0, goal_monthly - sold)
+
+                # Weekly checkpoint
+                expected_by_now = goal_weekly * week_number
+                weekly_status = "✅" if sold >= expected_by_now else "⚠️"
+
+                # Revenue calc
+                revenue_sold = sold * price
+                revenue_goal = goal_monthly * price
+                total_revenue_sold += revenue_sold
+                total_revenue_goal += revenue_goal
 
                 # Progress bar
                 filled = int(progress / 5)
                 bar = "█" * min(filled, 20) + "░" * max(0, 20 - filled)
 
-                response = f"🎯 <b>META SEMANAL</b>\n"
-                response += "━" * 30 + "\n\n"
-                response += f"💰 Meta: <b>${meta_value:,.0f}</b>\n"
-                response += f"✅ Vendido: <b>${week_sales:,.0f}</b> ({progress:.1f}%)\n"
-                response += f"📦 Pendiente: ${remaining:,.0f}\n"
-                response += f"📦 Pedidos esta semana: {orders_count}\n"
-                response += f"📅 Quedan {days_left} días\n\n"
-                response += f"<code>{bar}</code> {progress:.0f}%\n\n"
+                response += f"📦 <b>{product}</b>\n"
+                response += f"   🎯 Meta mensual: <b>{goal_monthly} uds</b> ({goal_weekly:.0f}/semana)\n"
+                response += f"   ✅ Vendidas: <b>{sold} uds</b> ({progress:.0f}%)\n"
+                response += f"   📊 Faltantes: {remaining} uds\n"
+                response += f"   {weekly_status} Sem {week_number}: esperado {expected_by_now:.0f} uds | real {sold}\n"
+                if price > 0:
+                    response += f"   💰 Facturado: ${revenue_sold:,.0f} / ${revenue_goal:,.0f}\n"
+                response += f"   <code>{bar}</code> {progress:.0f}%\n\n"
 
-                if progress >= 100:
-                    response += "🎉 <b>¡META CUMPLIDA!</b> 🏆🔥"
-                elif progress >= 75:
-                    response += "💪 ¡Casi lo logras! Empuja fuerte estos últimos días."
-                elif progress >= 50:
-                    response += "🚀 Vas en buen camino. ¡Sigue así!"
-                else:
-                    response += "⚡ Acelera las ventas. ¡Tú puedes!"
+            # Total summary
+            response += "━" * 30 + "\n"
+            response += f"💰 <b>FACTURACIÓN ESTIMADA:</b>\n"
+            response += f"   Vendido: <b>${total_revenue_sold:,.0f}</b>\n"
+            response += f"   Meta: <b>${total_revenue_goal:,.0f}</b>\n\n"
 
-                response += "\n\n💡 Para cambiar la meta: /meta_set [monto]"
+            total_progress = (total_revenue_sold / total_revenue_goal * 100) if total_revenue_goal > 0 else 0
+            if total_progress >= 100:
+                response += "🎉 <b>¡META CUMPLIDA!</b> 🏆🔥"
+            elif total_progress >= 75:
+                response += "💪 ¡Casi lo logras! Empuja fuerte."
+            elif total_progress >= 50:
+                response += "🚀 Vas en buen camino. ¡Sigue así!"
             else:
-                response = "🎯 <b>META SEMANAL</b>\n\n"
-                response += f"📊 Ventas esta semana: <b>${week_sales:,.0f}</b>\n"
-                response += f"📦 Pedidos: {orders_count}\n\n"
-                response += "⚠️ No tienes meta configurada.\n"
-                response += "Usa: /meta_set [monto]\n"
-                response += "Ej: <code>/meta_set 2000000</code>"
+                response += "⚡ Acelera las ventas. ¡Tú puedes!"
 
-            bot.send_message(message.chat.id, response, reply_markup=types.ReplyKeyboardRemove())
+            markup = types.InlineKeyboardMarkup(row_width=1)
+            for product_name in PRODUCT_CATALOG:
+                markup.add(types.InlineKeyboardButton(
+                    f"✏️ Cambiar meta: {product_name}",
+                    callback_data=f"meta_set:{product_name}"
+                ))
+
+            bot.send_message(message.chat.id, response, reply_markup=markup)
         except Exception as e:
             bot.send_message(message.chat.id, f"⚠️ Error: {e}")
+
+    # --------------- META SET CALLBACKS ---------------
+
+    @bot.callback_query_handler(func=lambda call: call.data.startswith("meta_set:"))
+    def handle_meta_set_callback(call):
+        """Handle meta set inline button."""
+        try:
+            bot.answer_callback_query(call.id)
+            product_name = call.data.replace("meta_set:", "")
+
+            today = date.today()
+            current_month = today.strftime("%Y-%m")
+
+            conn = get_connection()
+            try:
+                existing = conn.execute(
+                    "SELECT meta_unidades FROM metas WHERE producto = ? AND mes = ?",
+                    (product_name, current_month)
+                ).fetchone()
+
+                sold = conn.execute("""
+                    SELECT COALESCE(SUM(cantidad), 0) as uds
+                    FROM pedidos WHERE producto = ? AND fecha >= ? AND estado IN ('Pendiente', 'Entregado')
+                """, (product_name, today.replace(day=1).isoformat())).fetchone()["uds"]
+            finally:
+                conn.close()
+
+            current = existing["meta_unidades"] if existing else 0
+
+            msg = f"🎯 <b>CONFIGURAR META: {product_name}</b>\n\n"
+            if current > 0:
+                msg += f"📊 Meta actual: <b>{current} uds/mes</b>\n"
+            msg += f"✅ Vendidas este mes: <b>{sold} uds</b>\n\n"
+            msg += "Escribe la <b>cantidad de unidades</b> como meta mensual:\n"
+            msg += "<i>(Ej: 100 para 100 unidades al mes = 25/semana)</i>"
+
+            call.message.from_user = call.from_user
+            bot.send_message(call.message.chat.id, msg)
+            bot.register_next_step_handler(call.message, step_meta_save, product_name)
+        except Exception as e:
+            bot.answer_callback_query(call.id, f"⚠️ Error: {e}")
+
+    def step_meta_save(message, product_name):
+        if not is_admin(message):
+            return
+        try:
+            units = int(message.text.strip())
+            if units <= 0:
+                bot.send_message(message.chat.id, "❌ La meta debe ser mayor a 0.")
+                return
+
+            today = date.today()
+            current_month = today.strftime("%Y-%m")
+
+            conn = get_connection()
+            try:
+                existing = conn.execute(
+                    "SELECT id FROM metas WHERE producto = ? AND mes = ?",
+                    (product_name, current_month)
+                ).fetchone()
+
+                if existing:
+                    conn.execute(
+                        "UPDATE metas SET meta_unidades = ?, fecha_creacion = ? WHERE producto = ? AND mes = ?",
+                        (units, today.isoformat(), product_name, current_month)
+                    )
+                else:
+                    conn.execute(
+                        "INSERT INTO metas (producto, meta_unidades, mes, fecha_creacion) VALUES (?, ?, ?, ?)",
+                        (product_name, units, current_month, today.isoformat())
+                    )
+                conn.commit()
+
+                price = conn.execute("SELECT precio_venta FROM precios WHERE producto = ?", (product_name,)).fetchone()
+            finally:
+                conn.close()
+
+            weekly = units / 4
+            revenue = units * (price["precio_venta"] if price else 0)
+
+            markup = types.InlineKeyboardMarkup(row_width=1)
+            markup.add(types.InlineKeyboardButton("🎯 Ver Metas Completas", callback_data="cmd_meta"))
+
+            bot.send_message(
+                message.chat.id,
+                f"✅ <b>Meta configurada</b>\n\n"
+                f"📦 {product_name}\n"
+                f"🎯 Meta mensual: <b>{units} uds</b>\n"
+                f"📅 Semanal: <b>{weekly:.0f} uds/semana</b>\n"
+                f"💰 Facturación estimada: <b>${revenue:,.0f}</b>\n\n"
+                f"📊 Semana 1: {weekly:.0f} uds\n"
+                f"📊 Semana 2: {weekly*2:.0f} uds\n"
+                f"📊 Semana 3: {weekly*3:.0f} uds\n"
+                f"📊 Semana 4: {units} uds ← META 🏁",
+                reply_markup=markup
+            )
+        except ValueError:
+            bot.send_message(message.chat.id, "❌ Escribe un número válido. Ej: 100")
+        except Exception as e:
+            bot.send_message(message.chat.id, f"⚠️ Error: {e}")
+
+    # --------------- /meta_set (command fallback) ---------------
 
     @bot.message_handler(commands=["meta_set"])
     def cmd_target_set(message):
         if not is_admin(message):
             return
         try:
-            parts = message.text.strip().split()
-            if len(parts) < 2:
-                bot.send_message(message.chat.id, "❌ Uso: /meta_set [monto]\nEj: /meta_set 2000000")
-                return
-
-            meta_value = float(parts[1].replace(",", ""))
-            if meta_value <= 0:
-                bot.send_message(message.chat.id, "❌ La meta debe ser mayor a $0.")
-                return
-
-            today = date.today()
-            start_of_week = (today - timedelta(days=today.weekday())).isoformat()
-            end_of_week = (today + timedelta(days=6 - today.weekday())).isoformat()
-
-            conn = get_connection()
-            try:
-                # Delete any existing weekly target for this week
-                conn.execute("DELETE FROM metas WHERE tipo = 'semanal' AND fecha_inicio = ?", (start_of_week,))
-                conn.execute(
-                    "INSERT INTO metas (tipo, meta, fecha_inicio, fecha_fin) VALUES ('semanal', ?, ?, ?)",
-                    (meta_value, start_of_week, end_of_week)
-                )
-                conn.commit()
-            finally:
-                conn.close()
+            # Show product selection buttons
+            markup = types.InlineKeyboardMarkup(row_width=1)
+            for product_name in PRODUCT_CATALOG:
+                markup.add(types.InlineKeyboardButton(
+                    f"🎯 {product_name}",
+                    callback_data=f"meta_set:{product_name}"
+                ))
 
             bot.send_message(
                 message.chat.id,
-                f"✅ <b>Meta semanal configurada</b>\n\n"
-                f"🎯 Meta: <b>${meta_value:,.0f}</b>\n"
-                f"📅 {start_of_week} al {end_of_week}\n\n"
-                "Usa /meta para ver tu progreso."
+                "🎯 <b>CONFIGURAR META MENSUAL</b>\n\n"
+                "Selecciona el producto:",
+                reply_markup=markup
             )
-        except ValueError:
-            bot.send_message(message.chat.id, "❌ Monto inválido.")
         except Exception as e:
             bot.send_message(message.chat.id, f"⚠️ Error: {e}")

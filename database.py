@@ -127,13 +127,21 @@ def init_database():
         )
     """)
 
+    # Migration: Drop old metas table if it has the old schema (tipo/meta/fecha_inicio/fecha_fin)
+    try:
+        old_cols = [row[1] for row in cursor.execute("PRAGMA table_info(metas)").fetchall()]
+        if "tipo" in old_cols or "fecha_inicio" in old_cols:
+            cursor.execute("DROP TABLE metas")
+    except sqlite3.OperationalError:
+        pass
+
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS metas (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            tipo TEXT NOT NULL DEFAULT 'semanal',
-            meta REAL NOT NULL,
-            fecha_inicio DATE,
-            fecha_fin DATE
+            producto TEXT NOT NULL,
+            meta_unidades INTEGER NOT NULL DEFAULT 0,
+            mes TEXT NOT NULL,
+            fecha_creacion DATE
         )
     """)
 

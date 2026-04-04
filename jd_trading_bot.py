@@ -76,8 +76,8 @@ def set_bot_commands():
         types.BotCommand("caja", "Estado de resultados financiero"),
         types.BotCommand("cuentas_por_cobrar", "💳 Cartera por cobrar"),
         types.BotCommand("margen", "📊 Análisis de rentabilidad"),
-        types.BotCommand("meta", "🎯 Meta semanal de ventas"),
-        types.BotCommand("meta_set", "Configurar meta semanal"),
+        types.BotCommand("meta", "🎯 Meta mensual de ventas"),
+        types.BotCommand("meta_set", "Configurar meta mensual"),
         # Admin
         types.BotCommand("editar", "✏️ Editar un registro"),
         types.BotCommand("eliminar", "🗑️ Eliminar un registro"),

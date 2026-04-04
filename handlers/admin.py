@@ -125,7 +125,7 @@ def register(bot):
             )
             mk_finance.row(
                 types.InlineKeyboardButton("📈 Margen Rentabilidad", callback_data="cmd_margen"),
-                types.InlineKeyboardButton("🎯 Meta Semanal", callback_data="cmd_meta"),
+                types.InlineKeyboardButton("🎯 Meta Mensual", callback_data="cmd_meta"),
             )
             bot.send_message(chat_id,
                 "💼 <b>MÓDULO FINANZAS</b>\n"
