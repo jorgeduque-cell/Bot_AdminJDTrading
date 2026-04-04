@@ -196,22 +196,23 @@ def register(bot):
             return
         try:
             import io
-            conn = get_connection()
-            try:
-                tables = ["clientes", "pedidos", "finanzas", "inventario", "precios", "metas", "notas_cliente"]
-                backup_text = f"-- JD Trading Backup — {datetime.now().strftime('%d/%m/%Y %H:%M')}\n\n"
+            tables = ["clientes", "pedidos", "finanzas", "inventario", "precios", "metas", "notas_cliente"]
+            backup_text = f"-- JD Trading Backup — {datetime.now().strftime('%d/%m/%Y %H:%M')}\n\n"
 
-                for table in tables:
+            for table in tables:
+                conn = get_connection()
+                try:
                     rows = conn.execute(f"SELECT * FROM {table}").fetchall()
-                    backup_text += f"-- TABLE: {table} ({len(rows)} rows)\n"
-                    if rows:
-                        cols = list(rows[0].keys())
-                        backup_text += ",".join(cols) + "\n"
-                        for r in rows:
-                            backup_text += ",".join(str(r[c]) if r[c] is not None else "" for c in cols) + "\n"
-                    backup_text += "\n"
-            finally:
-                conn.close()
+                finally:
+                    conn.close()
+
+                backup_text += f"-- TABLE: {table} ({len(rows)} rows)\n"
+                if rows:
+                    cols = list(rows[0].keys())
+                    backup_text += ",".join(cols) + "\n"
+                    for r in rows:
+                        backup_text += ",".join(str(r[c]) if r[c] is not None else "" for c in cols) + "\n"
+                backup_text += "\n"
 
             file_bytes = io.BytesIO(backup_text.encode("utf-8"))
             file_bytes.name = f"jd_trading_backup_{date.today().isoformat()}.csv"
