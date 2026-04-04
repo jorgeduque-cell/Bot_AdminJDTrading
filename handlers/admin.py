@@ -14,6 +14,150 @@ from utils import is_admin, safe_split
 
 def register(bot):
 
+    # ── MODULE DEFINITIONS (used by drill-down menu) ──
+
+    MODULES = {
+        "crm": {
+            "title": "👥 MÓDULO CRM",
+            "desc": "Gestión de clientes, notas y seguimiento comercial",
+            "buttons": [
+                ("👤 Nuevo Cliente", "cmd_nuevo_cliente"),
+                ("👥 Ver Cartera", "cmd_clientes"),
+                ("🔍 Buscar", "cmd_buscar"),
+                ("📋 Ficha Cliente", "cmd_ficha"),
+                ("📝 Nota de Visita", "cmd_nota"),
+                ("📊 Pipeline", "cmd_seguimiento"),
+                ("📡 Radar Comercial", "cmd_radar"),
+                ("📅 Asignar Día", "cmd_asignar_dia"),
+            ],
+        },
+        "ventas": {
+            "title": "🛒 MÓDULO VENTAS",
+            "desc": "Pedidos, entregas y cobros",
+            "buttons": [
+                ("🛒 Crear Pedido", "cmd_vender"),
+                ("🔄 Repetir Pedido", "cmd_repetir"),
+                ("📦 Ver Pedidos", "cmd_pedidos"),
+                ("✅ Marcar Entregado", "cmd_entregar"),
+                ("💳 Cobros Pendientes", "cmd_cobrar"),
+                ("💵 Marcar Pagado", "cmd_pagar"),
+            ],
+        },
+        "precios": {
+            "title": "💰 MÓDULO PRECIOS",
+            "desc": "Lista de precios, PDF y cotizaciones WhatsApp",
+            "buttons": [
+                ("💰 Ver Precios", "cmd_precios"),
+                ("📄 PDF Precios", "price_pdf"),
+                ("📲 Cotizar WhatsApp", "cmd_cotizar"),
+            ],
+        },
+        "logistica": {
+            "title": "🚚 MÓDULO LOGÍSTICA",
+            "desc": "Rutas de trabajo, inventario y distribución",
+            "buttons": [
+                ("📅 Ruta Semanal", "cmd_ruta_semanal"),
+                ("🗺️ Prospección Pie", "cmd_ruta_pie"),
+                ("🚚 Entregas Camión", "cmd_ruta_camion"),
+                ("📦 Inventario", "cmd_inventario"),
+            ],
+        },
+        "finanzas": {
+            "title": "💼 MÓDULO FINANZAS",
+            "desc": "Caja, cartera, márgenes y metas de ventas",
+            "buttons": [
+                ("💼 Estado de Caja", "cmd_caja"),
+                ("💳 Cartera x Cobrar", "cmd_cuentas_por_cobrar"),
+                ("📝 Registrar Gasto", "cmd_gasto"),
+                ("📈 Margen Rentabilidad", "cmd_margen"),
+                ("🎯 Meta Mensual", "cmd_meta"),
+                ("⚙️ Configurar Meta", "cmd_meta_set"),
+            ],
+        },
+        "documentos": {
+            "title": "📄 MÓDULO DOCUMENTOS",
+            "desc": "Remisiones y despachos formales en PDF",
+            "buttons": [
+                ("📄 Remisión PDF", "cmd_remision"),
+                ("🚛 Despacho Formal", "cmd_despacho_jd"),
+            ],
+        },
+        "admin": {
+            "title": "⚙️ MÓDULO ADMIN",
+            "desc": "Edición, eliminación y respaldos",
+            "buttons": [
+                ("✏️ Editar Registro", "cmd_editar"),
+                ("🗑️ Eliminar Registro", "cmd_eliminar"),
+                ("💾 Backup BD", "cmd_backup"),
+            ],
+        },
+    }
+
+    MODULE_MENU_BUTTONS = [
+        ("👥 CRM", "mod_crm"),
+        ("🛒 Ventas", "mod_ventas"),
+        ("💰 Precios", "mod_precios"),
+        ("🚚 Logística", "mod_logistica"),
+        ("💼 Finanzas", "mod_finanzas"),
+        ("📄 Documentos", "mod_documentos"),
+        ("⚙️ Admin", "mod_admin"),
+    ]
+
+    def build_main_menu_markup():
+        """Build the main module selector inline keyboard."""
+        mk = types.InlineKeyboardMarkup(row_width=2)
+        mk.row(
+            types.InlineKeyboardButton("👥 CRM", callback_data="mod_crm"),
+            types.InlineKeyboardButton("🛒 Ventas", callback_data="mod_ventas"),
+        )
+        mk.row(
+            types.InlineKeyboardButton("💰 Precios", callback_data="mod_precios"),
+            types.InlineKeyboardButton("🚚 Logística", callback_data="mod_logistica"),
+        )
+        mk.row(
+            types.InlineKeyboardButton("💼 Finanzas", callback_data="mod_finanzas"),
+            types.InlineKeyboardButton("📄 Documentos", callback_data="mod_documentos"),
+        )
+        mk.row(
+            types.InlineKeyboardButton("⚙️ Admin", callback_data="mod_admin"),
+        )
+        return mk
+
+    def build_main_menu_text(total_clients, active_clients, prospects, pending_orders, unpaid, today_sales):
+        """Build the main dashboard text."""
+        text = "🏢 <b>JD TRADING OIL S.A.S</b>\n"
+        text += f"📅 {date.today().strftime('%d/%m/%Y')}\n"
+        text += "━" * 32 + "\n\n"
+        text += "📊 <b>PANEL RÁPIDO:</b>\n"
+        text += f"  👥 Clientes: {total_clients} (✅ {active_clients} | ⏳ {prospects})\n"
+        text += f"  📦 Pendientes: <b>{pending_orders}</b>\n"
+        text += f"  💳 Sin pagar: <b>{unpaid}</b>\n"
+        text += f"  💰 Ventas hoy: <b>${today_sales:,.0f}</b>\n\n"
+        text += "👇 <b>Selecciona un módulo:</b>"
+        return text
+
+    def build_module_markup(module_key):
+        """Build inline keyboard for a specific module's sub-commands."""
+        mod = MODULES[module_key]
+        mk = types.InlineKeyboardMarkup(row_width=2)
+        buttons = mod["buttons"]
+        for i in range(0, len(buttons), 2):
+            row = [types.InlineKeyboardButton(buttons[i][0], callback_data=buttons[i][1])]
+            if i + 1 < len(buttons):
+                row.append(types.InlineKeyboardButton(buttons[i+1][0], callback_data=buttons[i+1][1]))
+            mk.row(*row)
+        mk.row(types.InlineKeyboardButton("← Volver al Panel", callback_data="mod_back"))
+        return mk
+
+    def build_module_text(module_key):
+        """Build text for a specific module view."""
+        mod = MODULES[module_key]
+        text = f"{mod['title']}\n"
+        text += f"<i>{mod['desc']}</i>\n"
+        text += "━" * 32 + "\n\n"
+        text += "👇 <b>Selecciona una opción:</b>"
+        return text
+
     # --------------- /start ---------------
 
     @bot.message_handler(commands=["start"])
@@ -21,7 +165,6 @@ def register(bot):
         if not is_admin(message):
             return
         try:
-            chat_id = message.chat.id
             conn = get_connection()
             try:
                 total_clients = conn.execute("SELECT COUNT(*) as c FROM clientes").fetchone()["c"]
@@ -36,130 +179,52 @@ def register(bot):
             finally:
                 conn.close()
 
-            # ── MSG 1: DASHBOARD ──
-            dashboard = "🏢 <b>JD TRADING OIL S.A.S</b>\n"
-            dashboard += f"📅 {date.today().strftime('%d/%m/%Y')}\n"
-            dashboard += "━" * 32 + "\n\n"
-            dashboard += "📊 <b>PANEL RÁPIDO:</b>\n"
-            dashboard += f"  👥 Clientes: {total_clients} (✅ {active_clients} | ⏳ {prospects})\n"
-            dashboard += f"  📦 Pendientes: <b>{pending_orders}</b>\n"
-            dashboard += f"  💳 Sin pagar: <b>{unpaid}</b>\n"
-            dashboard += f"  💰 Ventas hoy: <b>${today_sales:,.0f}</b>"
-            bot.send_message(chat_id, dashboard)
-
-            # ── MSG 2: CRM ──
-            mk_crm = types.InlineKeyboardMarkup(row_width=3)
-            mk_crm.row(
-                types.InlineKeyboardButton("👤 Nuevo Cliente", callback_data="cmd_nuevo_cliente"),
-                types.InlineKeyboardButton("👥 Ver Cartera", callback_data="cmd_clientes"),
-                types.InlineKeyboardButton("🔍 Buscar", callback_data="cmd_buscar"),
-            )
-            mk_crm.row(
-                types.InlineKeyboardButton("📋 Ficha Cliente", callback_data="cmd_ficha"),
-                types.InlineKeyboardButton("📝 Nota de Visita", callback_data="cmd_nota"),
-                types.InlineKeyboardButton("📊 Pipeline", callback_data="cmd_seguimiento"),
-            )
-            mk_crm.row(
-                types.InlineKeyboardButton("📡 Radar Comercial", callback_data="cmd_radar"),
-                types.InlineKeyboardButton("📅 Asignar Día", callback_data="cmd_asignar_dia"),
-            )
-            bot.send_message(chat_id,
-                "👥 <b>MÓDULO CRM</b>\n"
-                "<i>Gestión de clientes, notas y seguimiento</i>",
-                reply_markup=mk_crm
-            )
-
-            # ── MSG 3: VENTAS ──
-            mk_sales = types.InlineKeyboardMarkup(row_width=3)
-            mk_sales.row(
-                types.InlineKeyboardButton("🛒 Crear Pedido", callback_data="cmd_vender"),
-                types.InlineKeyboardButton("🔄 Repetir Pedido", callback_data="cmd_repetir"),
-                types.InlineKeyboardButton("📦 Ver Pedidos", callback_data="cmd_pedidos"),
-            )
-            mk_sales.row(
-                types.InlineKeyboardButton("✅ Marcar Entregado", callback_data="cmd_entregar"),
-                types.InlineKeyboardButton("💳 Cobros Pendientes", callback_data="cmd_cobrar"),
-                types.InlineKeyboardButton("💵 Marcar Pagado", callback_data="cmd_pagar"),
-            )
-            bot.send_message(chat_id,
-                "🛒 <b>MÓDULO VENTAS</b>\n"
-                "<i>Pedidos, entregas y cobros</i>",
-                reply_markup=mk_sales
-            )
-
-            # ── MSG 4: PRECIOS & COTIZACIONES ──
-            mk_prices = types.InlineKeyboardMarkup(row_width=3)
-            mk_prices.row(
-                types.InlineKeyboardButton("💰 Ver Precios", callback_data="cmd_precios"),
-                types.InlineKeyboardButton("📄 PDF Precios", callback_data="price_pdf"),
-                types.InlineKeyboardButton("📲 Cotizar WhatsApp", callback_data="cmd_cotizar"),
-            )
-            bot.send_message(chat_id,
-                "💰 <b>MÓDULO PRECIOS</b>\n"
-                "<i>Lista de precios, PDF y cotizaciones por WhatsApp</i>",
-                reply_markup=mk_prices
-            )
-
-            # ── MSG 5: LOGÍSTICA ──
-            mk_logistics = types.InlineKeyboardMarkup(row_width=3)
-            mk_logistics.row(
-                types.InlineKeyboardButton("📅 Ruta Semanal", callback_data="cmd_ruta_semanal"),
-                types.InlineKeyboardButton("🗺️ Prospección Pie", callback_data="cmd_ruta_pie"),
-                types.InlineKeyboardButton("🚚 Entregas Camión", callback_data="cmd_ruta_camion"),
-            )
-            mk_logistics.row(
-                types.InlineKeyboardButton("📦 Inventario", callback_data="cmd_inventario"),
-            )
-            bot.send_message(chat_id,
-                "🚚 <b>MÓDULO LOGÍSTICA</b>\n"
-                "<i>Rutas de trabajo, inventario y distribución</i>",
-                reply_markup=mk_logistics
-            )
-
-            # ── MSG 6: FINANZAS ──
-            mk_finance = types.InlineKeyboardMarkup(row_width=3)
-            mk_finance.row(
-                types.InlineKeyboardButton("💼 Estado de Caja", callback_data="cmd_caja"),
-                types.InlineKeyboardButton("💳 Cartera x Cobrar", callback_data="cmd_cuentas_por_cobrar"),
-                types.InlineKeyboardButton("📝 Registrar Gasto", callback_data="cmd_gasto"),
-            )
-            mk_finance.row(
-                types.InlineKeyboardButton("📈 Margen Rentabilidad", callback_data="cmd_margen"),
-                types.InlineKeyboardButton("🎯 Meta Mensual", callback_data="cmd_meta"),
-            )
-            bot.send_message(chat_id,
-                "💼 <b>MÓDULO FINANZAS</b>\n"
-                "<i>Caja, cartera, márgenes y metas de ventas</i>",
-                reply_markup=mk_finance
-            )
-
-            # ── MSG 7: DOCUMENTOS ──
-            mk_docs = types.InlineKeyboardMarkup(row_width=2)
-            mk_docs.row(
-                types.InlineKeyboardButton("📄 Remisión PDF", callback_data="cmd_remision"),
-                types.InlineKeyboardButton("🚛 Despacho Formal", callback_data="cmd_despacho_jd"),
-            )
-            bot.send_message(chat_id,
-                "📄 <b>MÓDULO DOCUMENTOS</b>\n"
-                "<i>Remisiones y despachos formales en PDF</i>",
-                reply_markup=mk_docs
-            )
-
-            # ── MSG 8: ADMIN ──
-            mk_admin = types.InlineKeyboardMarkup(row_width=3)
-            mk_admin.row(
-                types.InlineKeyboardButton("✏️ Editar Registro", callback_data="cmd_editar"),
-                types.InlineKeyboardButton("🗑️ Eliminar Registro", callback_data="cmd_eliminar"),
-                types.InlineKeyboardButton("💾 Backup BD", callback_data="cmd_backup"),
-            )
-            bot.send_message(chat_id,
-                "⚙️ <b>MÓDULO ADMIN</b>\n"
-                "<i>Edición, eliminación y respaldos</i>",
-                reply_markup=mk_admin
-            )
-
+            text = build_main_menu_text(total_clients, active_clients, prospects, pending_orders, unpaid, today_sales)
+            bot.send_message(message.chat.id, text, reply_markup=build_main_menu_markup())
         except Exception as e:
             bot.send_message(message.chat.id, f"⚠️ Error: {e}")
+
+    # --------------- MODULE DRILL-DOWN ---------------
+
+    @bot.callback_query_handler(func=lambda call: call.data.startswith("mod_"))
+    def handle_module_navigation(call):
+        """Handle module selection — edit message to show sub-options."""
+        try:
+            bot.answer_callback_query(call.id)
+            action = call.data.replace("mod_", "")
+
+            if action == "back":
+                # Return to main menu — re-fetch stats
+                conn = get_connection()
+                try:
+                    total_clients = conn.execute("SELECT COUNT(*) as c FROM clientes").fetchone()["c"]
+                    active_clients = conn.execute("SELECT COUNT(*) as c FROM clientes WHERE estado = 'Activo'").fetchone()["c"]
+                    prospects = conn.execute("SELECT COUNT(*) as c FROM clientes WHERE estado = 'Prospecto'").fetchone()["c"]
+                    pending_orders = conn.execute("SELECT COUNT(*) as c FROM pedidos WHERE estado = 'Pendiente'").fetchone()["c"]
+                    unpaid = conn.execute("SELECT COUNT(*) as c FROM pedidos WHERE estado = 'Entregado' AND (estado_pago IS NULL OR estado_pago = 'Pendiente')").fetchone()["c"]
+                    today = date.today().isoformat()
+                    today_sales = conn.execute(
+                        "SELECT COALESCE(SUM(cantidad * precio_venta), 0) as t FROM pedidos WHERE fecha = %s", (today,)
+                    ).fetchone()["t"]
+                finally:
+                    conn.close()
+
+                text = build_main_menu_text(total_clients, active_clients, prospects, pending_orders, unpaid, today_sales)
+                bot.edit_message_text(
+                    text, call.message.chat.id, call.message.message_id,
+                    reply_markup=build_main_menu_markup()
+                )
+            elif action in MODULES:
+                text = build_module_text(action)
+                bot.edit_message_text(
+                    text, call.message.chat.id, call.message.message_id,
+                    reply_markup=build_module_markup(action)
+                )
+        except Exception as e:
+            try:
+                bot.answer_callback_query(call.id, f"⚠️ Error: {e}")
+            except Exception:
+                pass
 
     # --------------- INLINE BUTTON ROUTER ---------------
 
