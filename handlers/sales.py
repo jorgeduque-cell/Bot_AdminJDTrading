@@ -349,9 +349,71 @@ def register(bot):
             text += f"⚖️ Peso total: {grand_weight:.1f} kg\n"
             text += f"📌 Estado: Pendiente"
 
-            bot.send_message(message.chat.id, text, reply_markup=types.ReplyKeyboardRemove())
+            # Post-sale action buttons
+            markup = types.InlineKeyboardMarkup(row_width=1)
+            for oid in order_ids:
+                markup.add(types.InlineKeyboardButton(f"📄 Remisión Pedido #{oid}", callback_data=f"qrem_{oid}_{sale_data['cliente_id']}"))
+
+            bot.send_message(message.chat.id, text, reply_markup=markup)
         except Exception as e:
             bot.send_message(message.chat.id, f"⚠️ Error al crear pedido: {e}")
+
+    # ── Quick Remision from sale ──
+
+    @bot.callback_query_handler(func=lambda call: call.data.startswith("qrem_"))
+    def handle_quick_remision(call):
+        """Generate remision PDF directly after sale — then offer WhatsApp."""
+        try:
+            bot.answer_callback_query(call.id, "⏳ Generando remisión...")
+            parts = call.data.split("_")
+            order_id = int(parts[1])
+            client_id = int(parts[2])
+
+            conn = get_connection()
+            try:
+                order = conn.execute("""
+                    SELECT p.*, c.nombre as cliente_nombre, c.direccion as cliente_dir,
+                           c.telefono as cliente_tel
+                    FROM pedidos p JOIN clientes c ON p.cliente_id = c.id
+                    WHERE p.id = %s
+                """, (order_id,)).fetchone()
+            finally:
+                conn.close()
+
+            if not order:
+                bot.send_message(call.message.chat.id, f"❌ Pedido #{order_id} no encontrado.")
+                return
+
+            # Trigger remision generation via command simulation
+            call.message.from_user = call.from_user
+            call.message.text = f"/remision {order_id}"
+            bot.process_new_messages([call.message])
+
+            # After remision, offer WhatsApp button
+            phone = sanitize_phone_co(order["cliente_tel"]) if order["cliente_tel"] else None
+            if phone:
+                total = order["cantidad"] * order["precio_venta"]
+                wa_msg = (
+                    f"Buenos días {order['cliente_nombre']}, "
+                    f"le envío la remisión de su pedido #{order_id} "
+                    f"por ${total:,.0f}. "
+                    f"¡Gracias por su compra! — JD Trading Oil S.A.S"
+                )
+                import urllib.parse
+                wa_url = f"https://wa.me/{phone}?text={urllib.parse.quote(wa_msg)}"
+
+                markup = types.InlineKeyboardMarkup()
+                markup.add(types.InlineKeyboardButton("📲 Enviar por WhatsApp", url=wa_url))
+
+                bot.send_message(
+                    call.message.chat.id,
+                    f"📲 <b>Enviar remisión a {order['cliente_nombre']}</b>\n\n"
+                    f"1️⃣ Abre WhatsApp con el botón\n"
+                    f"2️⃣ Reenvía el PDF que acabas de recibir",
+                    reply_markup=markup
+                )
+        except Exception as e:
+            bot.send_message(call.message.chat.id, f"⚠️ Error: {e}")
 
     # --------------- /pedidos ---------------
 
