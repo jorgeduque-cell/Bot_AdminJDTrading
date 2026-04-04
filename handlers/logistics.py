@@ -112,11 +112,11 @@ def register(bot):
             conn = get_connection()
             try:
                 conn.execute(
-                    "UPDATE inventario SET stock_actual = stock_actual + ?, ultima_actualizacion = ? WHERE producto = ?",
+                    "UPDATE inventario SET stock_actual = stock_actual + %s, ultima_actualizacion = %s WHERE producto = %s",
                     (qty, today, product)
                 )
                 conn.commit()
-                new_stock = conn.execute("SELECT stock_actual FROM inventario WHERE producto = ?", (product,)).fetchone()["stock_actual"]
+                new_stock = conn.execute("SELECT stock_actual FROM inventario WHERE producto = %s", (product,)).fetchone()["stock_actual"]
             finally:
                 conn.close()
 
@@ -149,7 +149,7 @@ def register(bot):
             min_qty = int(message.text.strip())
             conn = get_connection()
             try:
-                conn.execute("UPDATE inventario SET stock_minimo = ? WHERE producto = ?", (min_qty, product))
+                conn.execute("UPDATE inventario SET stock_minimo = %s WHERE producto = %s", (min_qty, product))
                 conn.commit()
             finally:
                 conn.close()
@@ -359,7 +359,7 @@ def register(bot):
                 summary = ""
                 for day in WEEKDAYS:
                     count = conn.execute(
-                        "SELECT COUNT(*) as c FROM clientes WHERE dia_visita = ? AND latitud IS NOT NULL", (day,)
+                        "SELECT COUNT(*) as c FROM clientes WHERE dia_visita = %s AND latitud IS NOT NULL", (day,)
                     ).fetchone()["c"]
                     today_mark = " ← HOY" if day == today_name else ""
                     summary += f"  {WEEKDAY_EMOJIS[day]} {day}: <b>{count}</b> clientes{today_mark}\n"
@@ -371,50 +371,36 @@ def register(bot):
             finally:
                 conn.close()
 
-            markup = types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
+            separator = "━" * 30
+
+            markup = types.InlineKeyboardMarkup(row_width=2)
             if today_name and today_name in WEEKDAYS:
-                markup.add(f"📍 Ruta de HOY ({today_name})")
+                markup.add(types.InlineKeyboardButton(f"📍 Ruta de HOY ({today_name})", callback_data=f"ruta_dia:{today_name}"))
             for day in WEEKDAYS:
-                markup.add(f"{WEEKDAY_EMOJIS[day]} {day}")
-            markup.add("❌ Cancelar")
+                markup.add(types.InlineKeyboardButton(f"{WEEKDAY_EMOJIS[day]} {day}", callback_data=f"ruta_dia:{day}"))
 
             bot.send_message(
                 message.chat.id,
-                f"📅 <b>RUTAS SEMANALES FIJAS</b>\n"
-                f"━" * 30 + "\n\n"
-                f"{summary}\n"
-                "¿Qué día deseas ver?",
+                f"📅 <b>RUTAS SEMANALES FIJAS</b>\n{separator}\n\n{summary}\n¿Qué día deseas ver?",
                 reply_markup=markup
             )
-            bot.register_next_step_handler(message, step_weekly_select_day)
         except Exception as e:
             bot.send_message(message.chat.id, f"⚠️ Error: {e}")
 
-    def step_weekly_select_day(message):
-        if not is_admin(message):
-            return
+    @bot.callback_query_handler(func=lambda call: call.data.startswith("ruta_dia:"))
+    def handle_ruta_dia_callback(call):
+        """Handle weekly route day selection via inline buttons."""
         try:
-            selected = message.text.strip()
-            if "Cancelar" in selected:
-                bot.send_message(message.chat.id, "❌ Cancelado.", reply_markup=types.ReplyKeyboardRemove())
-                return
-
-            chosen_day = None
-            for day in WEEKDAYS:
-                if day in selected:
-                    chosen_day = day
-                    break
-
-            if not chosen_day:
-                bot.send_message(message.chat.id, "❌ Día no reconocido.", reply_markup=types.ReplyKeyboardRemove())
-                return
+            bot.answer_callback_query(call.id)
+            chosen_day = call.data.replace("ruta_dia:", "")
+            chat_id = call.message.chat.id
 
             conn = get_connection()
             try:
                 clients = conn.execute("""
                     SELECT id, nombre, direccion, telefono, tipo_negocio, latitud, longitud
                     FROM clientes
-                    WHERE dia_visita = ? AND latitud IS NOT NULL AND longitud IS NOT NULL
+                    WHERE dia_visita = %s AND latitud IS NOT NULL AND longitud IS NOT NULL
                     ORDER BY nombre
                 """, (chosen_day,)).fetchall()
             finally:
@@ -422,10 +408,9 @@ def register(bot):
 
             if not clients:
                 bot.send_message(
-                    message.chat.id,
+                    chat_id,
                     f"📭 No hay clientes geolocalizados asignados al <b>{chosen_day}</b>.\n\n"
-                    "Usa /asignar_dia para asignar clientes a un día.",
-                    reply_markup=types.ReplyKeyboardRemove()
+                    "Usa /asignar_dia para asignar clientes a un día."
                 )
                 return
 
@@ -487,9 +472,9 @@ def register(bot):
             for label, url in links:
                 response += f"  <a href='{url}'>{label}</a>\n"
 
-            bot.send_message(message.chat.id, response, reply_markup=types.ReplyKeyboardRemove(), disable_web_page_preview=True)
+            bot.send_message(chat_id, response, disable_web_page_preview=True)
         except Exception as e:
-            bot.send_message(message.chat.id, f"⚠️ Error: {e}")
+            bot.send_message(call.message.chat.id, f"⚠️ Error: {e}")
 
 
 # =========================================================================

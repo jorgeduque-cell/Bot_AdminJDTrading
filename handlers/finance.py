@@ -48,7 +48,7 @@ def register(bot):
             conn = get_connection()
             try:
                 conn.execute(
-                    "INSERT INTO finanzas (tipo, concepto, monto, fecha) VALUES ('Egreso', ?, ?, ?)",
+                    "INSERT INTO finanzas (tipo, concepto, monto, fecha) VALUES ('Egreso', %s, %s, %s)",
                     (expense_data["concepto"], amount, today)
                 )
                 conn.commit()
@@ -118,13 +118,13 @@ def register(bot):
             try:
                 if date_filter:
                     income_row = conn.execute(
-                        "SELECT COALESCE(SUM(monto), 0) as total FROM finanzas WHERE tipo = 'Ingreso' AND fecha >= ?", (date_filter,)
+                        "SELECT COALESCE(SUM(monto), 0) as total FROM finanzas WHERE tipo = 'Ingreso' AND fecha >= %s", (date_filter,)
                     ).fetchone()
                     cogs_row = conn.execute(
-                        "SELECT COALESCE(SUM(cantidad * costo_compra), 0) as total FROM pedidos WHERE estado = 'Entregado' AND fecha >= ?", (date_filter,)
+                        "SELECT COALESCE(SUM(cantidad * costo_compra), 0) as total FROM pedidos WHERE estado = 'Entregado' AND fecha >= %s", (date_filter,)
                     ).fetchone()
                     expenses_row = conn.execute(
-                        "SELECT COALESCE(SUM(monto), 0) as total FROM finanzas WHERE tipo = 'Egreso' AND fecha >= ?", (date_filter,)
+                        "SELECT COALESCE(SUM(monto), 0) as total FROM finanzas WHERE tipo = 'Egreso' AND fecha >= %s", (date_filter,)
                     ).fetchone()
                 else:
                     income_row = conn.execute("SELECT COALESCE(SUM(monto), 0) as total FROM finanzas WHERE tipo = 'Ingreso'").fetchone()
@@ -293,14 +293,14 @@ def register(bot):
             try:
                 # Get monthly goals
                 goals = conn.execute("""
-                    SELECT * FROM metas WHERE mes = ? ORDER BY producto
+                    SELECT * FROM metas WHERE mes = %s ORDER BY producto
                 """, (current_month,)).fetchall()
 
                 # Get monthly sales per product
                 sales = conn.execute("""
                     SELECT producto, COALESCE(SUM(cantidad), 0) as uds_vendidas
                     FROM pedidos
-                    WHERE fecha >= ? AND estado IN ('Pendiente', 'Entregado')
+                    WHERE fecha >= %s AND estado IN ('Pendiente', 'Entregado')
                     GROUP BY producto
                 """, (first_day.isoformat(),)).fetchall()
 
@@ -309,7 +309,7 @@ def register(bot):
 
                 # Total orders this month
                 total_orders = conn.execute("""
-                    SELECT COUNT(*) as c FROM pedidos WHERE fecha >= ?
+                    SELECT COUNT(*) as c FROM pedidos WHERE fecha >= %s
                 """, (first_day.isoformat(),)).fetchone()["c"]
             finally:
                 conn.close()
@@ -418,13 +418,13 @@ def register(bot):
             conn = get_connection()
             try:
                 existing = conn.execute(
-                    "SELECT meta_unidades FROM metas WHERE producto = ? AND mes = ?",
+                    "SELECT meta_unidades FROM metas WHERE producto = %s AND mes = %s",
                     (product_name, current_month)
                 ).fetchone()
 
                 sold = conn.execute("""
                     SELECT COALESCE(SUM(cantidad), 0) as uds
-                    FROM pedidos WHERE producto = ? AND fecha >= ? AND estado IN ('Pendiente', 'Entregado')
+                    FROM pedidos WHERE producto = %s AND fecha >= %s AND estado IN ('Pendiente', 'Entregado')
                 """, (product_name, today.replace(day=1).isoformat())).fetchone()["uds"]
             finally:
                 conn.close()
@@ -459,23 +459,23 @@ def register(bot):
             conn = get_connection()
             try:
                 existing = conn.execute(
-                    "SELECT id FROM metas WHERE producto = ? AND mes = ?",
+                    "SELECT id FROM metas WHERE producto = %s AND mes = %s",
                     (product_name, current_month)
                 ).fetchone()
 
                 if existing:
                     conn.execute(
-                        "UPDATE metas SET meta_unidades = ?, fecha_creacion = ? WHERE producto = ? AND mes = ?",
+                        "UPDATE metas SET meta_unidades = %s, fecha_creacion = %s WHERE producto = %s AND mes = %s",
                         (units, today.isoformat(), product_name, current_month)
                     )
                 else:
                     conn.execute(
-                        "INSERT INTO metas (producto, meta_unidades, mes, fecha_creacion) VALUES (?, ?, ?, ?)",
+                        "INSERT INTO metas (producto, meta_unidades, mes, fecha_creacion) VALUES (%s, %s, %s, %s)",
                         (product_name, units, current_month, today.isoformat())
                     )
                 conn.commit()
 
-                price = conn.execute("SELECT precio_venta FROM precios WHERE producto = ?", (product_name,)).fetchone()
+                price = conn.execute("SELECT precio_venta FROM precios WHERE producto = %s", (product_name,)).fetchone()
             finally:
                 conn.close()
 

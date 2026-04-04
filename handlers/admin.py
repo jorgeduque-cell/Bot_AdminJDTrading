@@ -31,7 +31,7 @@ def register(bot):
                 unpaid = conn.execute("SELECT COUNT(*) as c FROM pedidos WHERE estado = 'Entregado' AND (estado_pago IS NULL OR estado_pago = 'Pendiente')").fetchone()["c"]
                 today = date.today().isoformat()
                 today_sales = conn.execute(
-                    "SELECT COALESCE(SUM(cantidad * precio_venta), 0) as t FROM pedidos WHERE fecha = ?", (today,)
+                    "SELECT COALESCE(SUM(cantidad * precio_venta), 0) as t FROM pedidos WHERE fecha = %s", (today,)
                 ).fetchone()["t"]
             finally:
                 conn.close()
@@ -310,7 +310,7 @@ def register(bot):
             record_id = int(message.text.strip())
             conn = get_connection()
             try:
-                client = conn.execute("SELECT nombre FROM clientes WHERE id = ?", (record_id,)).fetchone()
+                client = conn.execute("SELECT nombre FROM clientes WHERE id = %s", (record_id,)).fetchone()
             finally:
                 conn.close()
 
@@ -340,9 +340,9 @@ def register(bot):
             if "Sí" in message.text:
                 conn = get_connection()
                 try:
-                    conn.execute("DELETE FROM finanzas WHERE pedido_id IN (SELECT id FROM pedidos WHERE cliente_id = ?)", (record_id,))
-                    conn.execute("DELETE FROM pedidos WHERE cliente_id = ?", (record_id,))
-                    conn.execute("DELETE FROM clientes WHERE id = ?", (record_id,))
+                    conn.execute("DELETE FROM finanzas WHERE pedido_id IN (SELECT id FROM pedidos WHERE cliente_id = %s)", (record_id,))
+                    conn.execute("DELETE FROM pedidos WHERE cliente_id = %s", (record_id,))
+                    conn.execute("DELETE FROM clientes WHERE id = %s", (record_id,))
                     conn.commit()
                 finally:
                     conn.close()
@@ -363,7 +363,7 @@ def register(bot):
                 order = conn.execute("""
                     SELECT p.producto, p.cantidad, c.nombre
                     FROM pedidos p JOIN clientes c ON p.cliente_id = c.id
-                    WHERE p.id = ?
+                    WHERE p.id = %s
                 """, (record_id,)).fetchone()
             finally:
                 conn.close()
@@ -394,8 +394,8 @@ def register(bot):
             if "Sí" in message.text:
                 conn = get_connection()
                 try:
-                    conn.execute("DELETE FROM finanzas WHERE pedido_id = ?", (record_id,))
-                    conn.execute("DELETE FROM pedidos WHERE id = ?", (record_id,))
+                    conn.execute("DELETE FROM finanzas WHERE pedido_id = %s", (record_id,))
+                    conn.execute("DELETE FROM pedidos WHERE id = %s", (record_id,))
                     conn.commit()
                 finally:
                     conn.close()
@@ -412,7 +412,7 @@ def register(bot):
             record_id = int(message.text.strip())
             conn = get_connection()
             try:
-                record = conn.execute("SELECT tipo, concepto, monto FROM finanzas WHERE id = ?", (record_id,)).fetchone()
+                record = conn.execute("SELECT tipo, concepto, monto FROM finanzas WHERE id = %s", (record_id,)).fetchone()
             finally:
                 conn.close()
 
@@ -442,7 +442,7 @@ def register(bot):
             if "Sí" in message.text:
                 conn = get_connection()
                 try:
-                    conn.execute("DELETE FROM finanzas WHERE id = ?", (record_id,))
+                    conn.execute("DELETE FROM finanzas WHERE id = %s", (record_id,))
                     conn.commit()
                 finally:
                     conn.close()
@@ -488,7 +488,7 @@ def register(bot):
             client_id = int(message.text.strip())
             conn = get_connection()
             try:
-                client = conn.execute("SELECT * FROM clientes WHERE id = ?", (client_id,)).fetchone()
+                client = conn.execute("SELECT * FROM clientes WHERE id = %s", (client_id,)).fetchone()
             finally:
                 conn.close()
 
@@ -559,7 +559,7 @@ def register(bot):
             conn = get_connection()
             try:
                 conn.execute(
-                    f"UPDATE clientes SET {db_field} = ?, ultima_interaccion = ? WHERE id = ?",
+                    f"UPDATE clientes SET {db_field} = %s, ultima_interaccion = %s WHERE id = %s",
                     (new_value, date.today().isoformat(), client_id)
                 )
                 conn.commit()

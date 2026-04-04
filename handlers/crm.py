@@ -197,7 +197,7 @@ def register(bot):
             client_id = int(message.text.strip())
             conn = get_connection()
             try:
-                client = conn.execute("SELECT nombre, dia_visita FROM clientes WHERE id = ?", (client_id,)).fetchone()
+                client = conn.execute("SELECT nombre, dia_visita FROM clientes WHERE id = %s", (client_id,)).fetchone()
             finally:
                 conn.close()
 
@@ -240,7 +240,7 @@ def register(bot):
 
             conn = get_connection()
             try:
-                conn.execute("UPDATE clientes SET dia_visita = ? WHERE id = ?", (new_day, client_id))
+                conn.execute("UPDATE clientes SET dia_visita = %s WHERE id = %s", (new_day, client_id))
                 conn.commit()
             finally:
                 conn.close()
@@ -280,7 +280,7 @@ def register(bot):
                     clients = conn.execute("SELECT * FROM clientes ORDER BY nombre").fetchall()
                     label = "TODOS"
                 else:
-                    clients = conn.execute("SELECT * FROM clientes WHERE estado = ? ORDER BY nombre", (filter_type,)).fetchall()
+                    clients = conn.execute("SELECT * FROM clientes WHERE estado = %s ORDER BY nombre", (filter_type,)).fetchall()
                     label = filter_type.upper() + "S"
             finally:
                 conn.close()
@@ -344,7 +344,7 @@ def register(bot):
             query = message.text.strip()
             conn = get_connection()
             try:
-                results = conn.execute("SELECT * FROM clientes WHERE nombre LIKE ?", (f"%{query}%",)).fetchall()
+                results = conn.execute("SELECT * FROM clientes WHERE nombre ILIKE %s", (f"%{query}%",)).fetchall()
             finally:
                 conn.close()
 
@@ -399,8 +399,8 @@ def register(bot):
                 fugue_clients = conn.execute("""
                     SELECT c.id, c.nombre, c.telefono, c.ultima_interaccion
                     FROM clientes c
-                    WHERE c.estado = 'Activo' AND c.ultima_interaccion < ?
-                    AND NOT EXISTS (SELECT 1 FROM pedidos p WHERE p.cliente_id = c.id AND p.fecha >= ?)
+                    WHERE c.estado = 'Activo' AND c.ultima_interaccion < %s
+                    AND NOT EXISTS (SELECT 1 FROM pedidos p WHERE p.cliente_id = c.id AND p.fecha >= %s)
                 """, (cutoff_date, cutoff_date)).fetchall()
 
                 report += "🚨 <b>ALERTA FUGA</b> (Sin compras +14 días)\n"
@@ -418,7 +418,7 @@ def register(bot):
                 cold_date = (today - timedelta(days=7)).isoformat()
                 cold_prospects = conn.execute("""
                     SELECT id, nombre, telefono, fecha_registro
-                    FROM clientes WHERE estado = 'Prospecto' AND fecha_registro < ?
+                    FROM clientes WHERE estado = 'Prospecto' AND fecha_registro < %s
                 """, (cold_date,)).fetchall()
 
                 report += "🧊 <b>PROSPECTOS FRÍOS</b> (Registrados hace +7 días)\n"
@@ -449,7 +449,7 @@ def register(bot):
             client_id = int(parts[1])
             conn = get_connection()
             try:
-                client = conn.execute("SELECT nombre FROM clientes WHERE id = ?", (client_id,)).fetchone()
+                client = conn.execute("SELECT nombre FROM clientes WHERE id = %s", (client_id,)).fetchone()
             finally:
                 conn.close()
 
@@ -478,10 +478,10 @@ def register(bot):
             conn = get_connection()
             try:
                 conn.execute(
-                    "INSERT INTO notas_cliente (cliente_id, texto, fecha) VALUES (?, ?, ?)",
+                    "INSERT INTO notas_cliente (cliente_id, texto, fecha) VALUES (%s, %s, %s)",
                     (client_id, text, today)
                 )
-                conn.execute("UPDATE clientes SET ultima_interaccion = ? WHERE id = ?", (today, client_id))
+                conn.execute("UPDATE clientes SET ultima_interaccion = %s WHERE id = %s", (today, client_id))
                 conn.commit()
             finally:
                 conn.close()
@@ -511,7 +511,7 @@ def register(bot):
             client_id = int(parts[1])
             conn = get_connection()
             try:
-                client = conn.execute("SELECT * FROM clientes WHERE id = ?", (client_id,)).fetchone()
+                client = conn.execute("SELECT * FROM clientes WHERE id = %s", (client_id,)).fetchone()
                 if not client:
                     bot.send_message(message.chat.id, f"❌ No existe cliente con ID {client_id}")
                     return
@@ -519,7 +519,7 @@ def register(bot):
                 # Last 5 orders
                 orders = conn.execute("""
                     SELECT id, producto, cantidad, precio_venta, estado, estado_pago, fecha
-                    FROM pedidos WHERE cliente_id = ? ORDER BY id DESC LIMIT 5
+                    FROM pedidos WHERE cliente_id = %s ORDER BY id DESC LIMIT 5
                 """, (client_id,)).fetchall()
 
                 # Total billed
@@ -527,12 +527,12 @@ def register(bot):
                     SELECT COALESCE(SUM(cantidad * precio_venta), 0) as total_vendido,
                            COALESCE(SUM(cantidad * (precio_venta - costo_compra)), 0) as total_utilidad,
                            COUNT(*) as num_pedidos
-                    FROM pedidos WHERE cliente_id = ?
+                    FROM pedidos WHERE cliente_id = %s
                 """, (client_id,)).fetchone()
 
                 # Last 3 notes
                 notes = conn.execute("""
-                    SELECT texto, fecha FROM notas_cliente WHERE cliente_id = ? ORDER BY id DESC LIMIT 3
+                    SELECT texto, fecha FROM notas_cliente WHERE cliente_id = %s ORDER BY id DESC LIMIT 3
                 """, (client_id,)).fetchall()
             finally:
                 conn.close()
@@ -620,7 +620,7 @@ def register(bot):
                     SELECT c.id, c.nombre, COUNT(p.id) as num_orders
                     FROM clientes c JOIN pedidos p ON c.id = p.cliente_id
                     WHERE c.estado = 'Activo'
-                    GROUP BY c.id HAVING num_orders >= 3
+                    GROUP BY c.id HAVING COUNT(p.id) >= 3
                     ORDER BY num_orders DESC LIMIT 5
                 """).fetchall()
 
@@ -629,7 +629,7 @@ def register(bot):
                 inactive_candidates = conn.execute("""
                     SELECT c.id, c.nombre, c.ultima_interaccion
                     FROM clientes c WHERE c.estado = 'Activo'
-                    AND NOT EXISTS (SELECT 1 FROM pedidos p WHERE p.cliente_id = c.id AND p.fecha >= ?)
+                    AND NOT EXISTS (SELECT 1 FROM pedidos p WHERE p.cliente_id = c.id AND p.fecha >= %s)
                 """, (cutoff_30,)).fetchall()
             finally:
                 conn.close()
@@ -680,14 +680,14 @@ def save_client(bot, message, client_data):
             cursor = conn.execute(
                 """INSERT INTO clientes
                    (nombre, telefono, direccion, tipo_negocio, estado, fecha_registro, ultima_interaccion, latitud, longitud, dia_visita)
-                   VALUES (?, ?, ?, ?, 'Prospecto', ?, ?, ?, ?, ?)""",
+                   VALUES (%s, %s, %s, %s, 'Prospecto', %s, %s, %s, %s, %s) RETURNING id""",
                 (client_data["nombre"], client_data["telefono"],
                  client_data["direccion"], tipo, today, today,
                  client_data.get("latitud"), client_data.get("longitud"),
                  client_data.get("dia_visita"))
             )
+            client_id = cursor.fetchone()["id"]
             conn.commit()
-            client_id = cursor.lastrowid
         finally:
             conn.close()
 

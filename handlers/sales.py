@@ -33,13 +33,13 @@ def register(bot):
             client_id = int(message.text.strip())
             conn = get_connection()
             try:
-                client = conn.execute("SELECT * FROM clientes WHERE id = ?", (client_id,)).fetchone()
+                client = conn.execute("SELECT * FROM clientes WHERE id = %s", (client_id,)).fetchone()
                 if not client:
                     bot.send_message(message.chat.id, "❌ Cliente no encontrado. Verifica el ID.")
                     return
 
                 today = date.today().isoformat()
-                conn.execute("UPDATE clientes SET estado = 'Activo', ultima_interaccion = ? WHERE id = ?", (today, client_id))
+                conn.execute("UPDATE clientes SET estado = 'Activo', ultima_interaccion = %s WHERE id = %s", (today, client_id))
                 conn.commit()
             finally:
                 conn.close()
@@ -131,13 +131,13 @@ def register(bot):
             try:
                 cursor = conn.execute(
                     """INSERT INTO pedidos (cliente_id, producto, tipo_carga, cantidad, peso_kg, costo_compra, precio_venta, estado, fecha)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, 'Pendiente', ?)""",
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, 'Pendiente', %s) RETURNING id""",
                     (sale_data["cliente_id"], sale_data["producto"], cargo_type,
                      sale_data["cantidad"], total_weight, sale_data["costo_compra"],
                      price, today)
                 )
+                order_id = cursor.fetchone()["id"]
                 conn.commit()
-                order_id = cursor.lastrowid
             finally:
                 conn.close()
 
@@ -193,7 +193,7 @@ def register(bot):
                 else:
                     orders = conn.execute("""
                         SELECT p.*, c.nombre as cliente_nombre FROM pedidos p
-                        JOIN clientes c ON p.cliente_id = c.id WHERE p.estado = ? ORDER BY p.fecha DESC
+                        JOIN clientes c ON p.cliente_id = c.id WHERE p.estado = %s ORDER BY p.fecha DESC
                     """, (filter_type,)).fetchall()
                     label = filter_type.upper() + "S"
             finally:
@@ -261,7 +261,7 @@ def register(bot):
             order_id = int(parts[1])
             conn = get_connection()
             try:
-                order = conn.execute("SELECT * FROM pedidos WHERE id = ?", (order_id,)).fetchone()
+                order = conn.execute("SELECT * FROM pedidos WHERE id = %s", (order_id,)).fetchone()
 
                 if not order:
                     bot.send_message(message.chat.id, "❌ Pedido no encontrado.")
@@ -274,22 +274,22 @@ def register(bot):
                 today = date.today().isoformat()
                 income = order["cantidad"] * order["precio_venta"]
 
-                conn.execute("UPDATE pedidos SET estado = 'Entregado' WHERE id = ?", (order_id,))
+                conn.execute("UPDATE pedidos SET estado = 'Entregado' WHERE id = %s", (order_id,))
                 conn.execute(
-                    "INSERT INTO finanzas (tipo, concepto, monto, fecha, pedido_id) VALUES ('Ingreso', ?, ?, ?, ?)",
+                    "INSERT INTO finanzas (tipo, concepto, monto, fecha, pedido_id) VALUES ('Ingreso', %s, %s, %s, %s)",
                     (f"Venta pedido #{order_id} — {order['producto']}", income, today, order_id)
                 )
 
                 # Auto-deduct from inventory
                 try:
                     conn.execute(
-                        "UPDATE inventario SET stock_actual = MAX(0, stock_actual - ?), ultima_actualizacion = ? WHERE producto = ?",
+                        "UPDATE inventario SET stock_actual = GREATEST(0, stock_actual - %s), ultima_actualizacion = %s WHERE producto = %s",
                         (order["cantidad"], today, order["producto"])
                     )
                 except Exception:
                     pass
 
-                conn.execute("UPDATE clientes SET ultima_interaccion = ? WHERE id = ?", (today, order["cliente_id"]))
+                conn.execute("UPDATE clientes SET ultima_interaccion = %s WHERE id = %s", (today, order["cliente_id"]))
                 conn.commit()
             finally:
                 conn.close()
@@ -370,7 +370,7 @@ def register(bot):
             conn = get_connection()
             try:
                 order = conn.execute("""
-                    SELECT p.*, c.nombre FROM pedidos p JOIN clientes c ON p.cliente_id = c.id WHERE p.id = ?
+                    SELECT p.*, c.nombre FROM pedidos p JOIN clientes c ON p.cliente_id = c.id WHERE p.id = %s
                 """, (order_id,)).fetchone()
 
                 if not order:
@@ -381,7 +381,7 @@ def register(bot):
                     bot.answer_callback_query(call.id, "ℹ️ Ya está pagado.")
                     return
 
-                conn.execute("UPDATE pedidos SET estado_pago = 'Pagado' WHERE id = ?", (order_id,))
+                conn.execute("UPDATE pedidos SET estado_pago = 'Pagado' WHERE id = %s", (order_id,))
                 conn.commit()
             finally:
                 conn.close()
@@ -413,7 +413,7 @@ def register(bot):
             conn = get_connection()
             try:
                 order = conn.execute("""
-                    SELECT p.*, c.nombre FROM pedidos p JOIN clientes c ON p.cliente_id = c.id WHERE p.id = ?
+                    SELECT p.*, c.nombre FROM pedidos p JOIN clientes c ON p.cliente_id = c.id WHERE p.id = %s
                 """, (order_id,)).fetchone()
 
                 if not order:
@@ -424,7 +424,7 @@ def register(bot):
                     bot.send_message(message.chat.id, "ℹ️ Este pedido ya está marcado como pagado.")
                     return
 
-                conn.execute("UPDATE pedidos SET estado_pago = 'Pagado' WHERE id = ?", (order_id,))
+                conn.execute("UPDATE pedidos SET estado_pago = 'Pagado' WHERE id = %s", (order_id,))
                 conn.commit()
             finally:
                 conn.close()
@@ -456,14 +456,14 @@ def register(bot):
             client_id = int(parts[1])
             conn = get_connection()
             try:
-                client = conn.execute("SELECT nombre FROM clientes WHERE id = ?", (client_id,)).fetchone()
+                client = conn.execute("SELECT nombre FROM clientes WHERE id = %s", (client_id,)).fetchone()
                 if not client:
                     bot.send_message(message.chat.id, "❌ Cliente no encontrado.")
                     return
 
                 last_order = conn.execute("""
                     SELECT producto, cantidad, costo_compra, precio_venta, tipo_carga, peso_kg
-                    FROM pedidos WHERE cliente_id = ? ORDER BY id DESC LIMIT 1
+                    FROM pedidos WHERE cliente_id = %s ORDER BY id DESC LIMIT 1
                 """, (client_id,)).fetchone()
             finally:
                 conn.close()
@@ -507,14 +507,14 @@ def register(bot):
             try:
                 cursor = conn.execute(
                     """INSERT INTO pedidos (cliente_id, producto, tipo_carga, cantidad, peso_kg, costo_compra, precio_venta, estado, fecha)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, 'Pendiente', ?)""",
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, 'Pendiente', %s) RETURNING id""",
                     (client_id, last_order["producto"], last_order["tipo_carga"],
                      last_order["cantidad"], last_order["peso_kg"],
                      last_order["costo_compra"], last_order["precio_venta"], today)
                 )
-                conn.execute("UPDATE clientes SET estado = 'Activo', ultima_interaccion = ? WHERE id = ?", (today, client_id))
+                conn.execute("UPDATE clientes SET estado = 'Activo', ultima_interaccion = %s WHERE id = %s", (today, client_id))
                 conn.commit()
-                order_id = cursor.lastrowid
+                order_id = cursor.fetchone()["id"] if cursor.description else 0
             finally:
                 conn.close()
 

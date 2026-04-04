@@ -41,7 +41,7 @@ def register(bot):
             try:
                 order = conn.execute("""
                     SELECT p.*, c.nombre as cliente_nombre, c.direccion as cliente_dir, c.telefono as cliente_tel
-                    FROM pedidos p JOIN clientes c ON p.cliente_id = c.id WHERE p.id = ?
+                    FROM pedidos p JOIN clientes c ON p.cliente_id = c.id WHERE p.id = %s
                 """, (order_id,)).fetchone()
             finally:
                 conn.close()
@@ -322,7 +322,7 @@ def register(bot):
 
             conn = get_connection()
             try:
-                product = conn.execute("SELECT * FROM precios WHERE producto = ?", (product_name,)).fetchone()
+                product = conn.execute("SELECT * FROM precios WHERE producto = %s", (product_name,)).fetchone()
             finally:
                 conn.close()
 
@@ -372,15 +372,15 @@ def register(bot):
 
             conn = get_connection()
             try:
-                existing = conn.execute("SELECT id FROM precios WHERE producto = ?", (product_name,)).fetchone()
+                existing = conn.execute("SELECT id FROM precios WHERE producto = %s", (product_name,)).fetchone()
                 if existing:
                     conn.execute(
-                        "UPDATE precios SET precio_compra = ?, precio_venta = ?, fecha_actualizacion = ? WHERE producto = ?",
+                        "UPDATE precios SET precio_compra = %s, precio_venta = %s, fecha_actualizacion = %s WHERE producto = %s",
                         (cost, price, today, product_name)
                     )
                 else:
                     conn.execute(
-                        "INSERT INTO precios (producto, precio_compra, precio_venta, fecha_actualizacion) VALUES (?, ?, ?, ?)",
+                        "INSERT INTO precios (producto, precio_compra, precio_venta, fecha_actualizacion) VALUES (%s, %s, %s, %s)",
                         (product_name, cost, price, today)
                     )
                 conn.commit()
@@ -482,15 +482,15 @@ def register(bot):
 
             conn = get_connection()
             try:
-                existing = conn.execute("SELECT id FROM precios WHERE producto = ?", (product_name,)).fetchone()
+                existing = conn.execute("SELECT id FROM precios WHERE producto = %s", (product_name,)).fetchone()
                 if existing:
                     conn.execute(
-                        "UPDATE precios SET precio_compra = ?, precio_venta = ?, fecha_actualizacion = ? WHERE producto = ?",
+                        "UPDATE precios SET precio_compra = %s, precio_venta = %s, fecha_actualizacion = %s WHERE producto = %s",
                         (cost, price, today, product_name)
                     )
                 else:
                     conn.execute(
-                        "INSERT INTO precios (producto, precio_compra, precio_venta, fecha_actualizacion) VALUES (?, ?, ?, ?)",
+                        "INSERT INTO precios (producto, precio_compra, precio_venta, fecha_actualizacion) VALUES (%s, %s, %s, %s)",
                         (product_name, cost, price, today)
                     )
                 conn.commit()
@@ -566,7 +566,7 @@ def register(bot):
                 conn = get_connection()
                 try:
                     clients = conn.execute(
-                        "SELECT id, nombre, telefono FROM clientes WHERE fecha_registro = ? AND telefono IS NOT NULL",
+                        "SELECT id, nombre, telefono FROM clientes WHERE fecha_registro = %s AND telefono IS NOT NULL",
                         (today,)
                     ).fetchall()
                 finally:
@@ -602,7 +602,7 @@ def register(bot):
             client_id = int(message.text.strip())
             conn = get_connection()
             try:
-                client = conn.execute("SELECT id, nombre, telefono FROM clientes WHERE id = ?", (client_id,)).fetchone()
+                client = conn.execute("SELECT id, nombre, telefono FROM clientes WHERE id = %s", (client_id,)).fetchone()
             finally:
                 conn.close()
 
