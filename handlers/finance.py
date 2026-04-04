@@ -72,34 +72,40 @@ def register(bot):
         if not is_admin(message):
             return
         try:
-            markup = types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
-            markup.add("📅 Hoy", "📆 Esta Semana")
-            markup.add("🗓️ Este Mes", "📊 Histórico Total")
+            markup = types.InlineKeyboardMarkup(row_width=2)
+            markup.row(
+                types.InlineKeyboardButton("📅 Hoy", callback_data="caja:hoy"),
+                types.InlineKeyboardButton("📆 Esta Semana", callback_data="caja:semana"),
+            )
+            markup.row(
+                types.InlineKeyboardButton("🗓️ Este Mes", callback_data="caja:mes"),
+                types.InlineKeyboardButton("📊 Histórico Total", callback_data="caja:total"),
+            )
 
             bot.send_message(
                 message.chat.id,
                 "💼 <b>ESTADO DE RESULTADOS</b>\n\n¿Qué período deseas consultar?",
                 reply_markup=markup
             )
-            bot.register_next_step_handler(message, step_caja_filter)
         except Exception as e:
             bot.send_message(message.chat.id, f"⚠️ Error: {e}")
 
-    def step_caja_filter(message):
-        if not is_admin(message):
-            return
+    @bot.callback_query_handler(func=lambda call: call.data.startswith("caja:"))
+    def handle_caja_callback(call):
+        """Handle caja period selection via inline buttons."""
         try:
-            selected = message.text.strip()
+            bot.answer_callback_query(call.id)
+            period = call.data.replace("caja:", "")
             today = date.today()
 
-            if "Hoy" in selected:
+            if period == "hoy":
                 date_filter = today.isoformat()
                 period_label = f"HOY ({today.strftime('%d/%m/%Y')})"
-            elif "Semana" in selected:
+            elif period == "semana":
                 start_of_week = (today - timedelta(days=today.weekday())).isoformat()
                 date_filter = start_of_week
                 period_label = f"ESTA SEMANA (desde {start_of_week})"
-            elif "Mes" in selected:
+            elif period == "mes":
                 start_of_month = today.replace(day=1).isoformat()
                 date_filter = start_of_month
                 period_label = f"ESTE MES ({today.strftime('%B %Y')})"
@@ -147,9 +153,9 @@ def register(bot):
             report += f"  📈 30% Inversión: ${investment:,.0f}\n"
             report += f"  🚛 20% Fondo Camión: ${truck_fund:,.0f}\n"
 
-            bot.send_message(message.chat.id, report, reply_markup=types.ReplyKeyboardRemove())
+            bot.send_message(call.message.chat.id, report)
         except Exception as e:
-            bot.send_message(message.chat.id, f"⚠️ Error al generar estado de caja: {e}")
+            bot.send_message(call.message.chat.id, f"⚠️ Error al generar estado de caja: {e}")
 
     # --------------- /cuentas_por_cobrar ---------------
 

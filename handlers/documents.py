@@ -277,38 +277,183 @@ def register(bot):
             finally:
                 conn.close()
 
-            if not prices or all(p["precio_venta"] == 0 for p in prices):
-                bot.send_message(
-                    message.chat.id,
-                    "⚠️ No tienes precios configurados aún.\n\n"
-                    "Usa /precios_set para configurarlos.\n"
-                    "Ej: <code>/precios_set Caja Oleosoberano,85000,95000</code>\n"
-                    "Formato: producto,costo,venta"
-                )
-                return
+            has_prices = prices and any(p["precio_venta"] > 0 for p in prices)
 
-            # Send text summary
-            response = f"💰 <b>LISTA DE PRECIOS — {COMPANY_NAME}</b>\n"
-            response += f"📅 Actualizado: {prices[0]['fecha_actualizacion']}\n"
-            response += "━" * 30 + "\n\n"
+            if has_prices:
+                response = f"💰 <b>LISTA DE PRECIOS — {COMPANY_NAME}</b>\n"
+                response += f"📅 Actualizado: {prices[0]['fecha_actualizacion']}\n"
+                response += "━" * 30 + "\n\n"
 
+                for p in prices:
+                    if p["precio_venta"] > 0:
+                        margin = ((p["precio_venta"] - p["precio_compra"]) / p["precio_venta"] * 100) if p["precio_venta"] > 0 else 0
+                        response += f"📦 <b>{p['producto']}</b>\n"
+                        response += f"   💲 Costo: ${p['precio_compra']:,.0f} | Venta: <b>${p['precio_venta']:,.0f}</b> | Margen: {margin:.0f}%\n\n"
+            else:
+                response = "⚠️ No tienes precios configurados aún.\n\n"
+                response += "👇 Presiona un producto para configurar su precio:"
+
+            # Inline buttons for each product
+            markup = types.InlineKeyboardMarkup(row_width=1)
             for p in prices:
+                label = f"✏️ {p['producto']}"
                 if p["precio_venta"] > 0:
-                    margin = ((p["precio_venta"] - p["precio_compra"]) / p["precio_venta"] * 100) if p["precio_venta"] > 0 else 0
-                    response += f"📦 <b>{p['producto']}</b>\n"
-                    response += f"   💲 Costo: ${p['precio_compra']:,.0f} | Venta: <b>${p['precio_venta']:,.0f}</b> | Margen: {margin:.0f}%\n\n"
+                    label += f" (${p['precio_venta']:,.0f})"
+                markup.add(types.InlineKeyboardButton(label, callback_data=f"price_edit:{p['producto']}"))
 
-            response += "📝 Editar: /precios_set [producto,costo,venta]\n"
-            response += "📄 Generar PDF: respondiendo 'pdf'"
+            markup.row(
+                types.InlineKeyboardButton("📄 Generar PDF", callback_data="price_pdf"),
+                types.InlineKeyboardButton("📲 Cotizar", callback_data="cmd_cotizar"),
+            )
+            markup.add(types.InlineKeyboardButton("➕ Agregar producto nuevo", callback_data="price_new"))
 
-            bot.send_message(message.chat.id, response)
-
-            # Generate PDF price list
-            generate_price_list_pdf(bot, message, prices)
+            bot.send_message(message.chat.id, response, reply_markup=markup)
         except Exception as e:
             bot.send_message(message.chat.id, f"⚠️ Error: {e}")
 
-    # --------------- /precios_set ---------------
+    # --------------- PRICE INLINE CALLBACKS ---------------
+
+    @bot.callback_query_handler(func=lambda call: call.data.startswith("price_edit:"))
+    def handle_price_edit(call):
+        """Handle inline button to edit a specific product price."""
+        try:
+            bot.answer_callback_query(call.id)
+            product_name = call.data.replace("price_edit:", "")
+
+            conn = get_connection()
+            try:
+                product = conn.execute("SELECT * FROM precios WHERE producto = ?", (product_name,)).fetchone()
+            finally:
+                conn.close()
+
+            if not product:
+                bot.send_message(call.message.chat.id, "❌ Producto no encontrado.")
+                return
+
+            msg = f"✏️ <b>ACTUALIZAR PRECIO: {product_name}</b>\n\n"
+            if product["precio_venta"] > 0:
+                msg += f"📊 Precio actual:\n"
+                msg += f"   💲 Costo: ${product['precio_compra']:,.0f}\n"
+                msg += f"   💰 Venta: ${product['precio_venta']:,.0f}\n\n"
+            msg += "Escribe el <b>nuevo costo de compra</b>:"
+
+            call.message.from_user = call.from_user
+            bot.send_message(call.message.chat.id, msg)
+            bot.register_next_step_handler(call.message, step_price_cost, product_name)
+        except Exception as e:
+            bot.answer_callback_query(call.id, f"⚠️ Error: {e}")
+
+    def step_price_cost(message, product_name):
+        if not is_admin(message):
+            return
+        try:
+            cost = float(message.text.strip().replace(",", "."))
+            if cost <= 0:
+                bot.send_message(message.chat.id, "❌ El costo debe ser mayor a $0.")
+                return
+            bot.send_message(message.chat.id, f"💰 Costo: <b>${cost:,.0f}</b> ✅\n\nAhora escribe el <b>precio de venta</b>:")
+            bot.register_next_step_handler(message, step_price_sale, product_name, cost)
+        except ValueError:
+            bot.send_message(message.chat.id, "❌ Valor inválido. Ingresa un número.")
+        except Exception as e:
+            bot.send_message(message.chat.id, f"⚠️ Error: {e}")
+
+    def step_price_sale(message, product_name, cost):
+        if not is_admin(message):
+            return
+        try:
+            price = float(message.text.strip().replace(",", "."))
+            if price <= 0:
+                bot.send_message(message.chat.id, "❌ El precio debe ser mayor a $0.")
+                return
+
+            from datetime import date as d
+            today = d.today().isoformat()
+
+            conn = get_connection()
+            try:
+                existing = conn.execute("SELECT id FROM precios WHERE producto = ?", (product_name,)).fetchone()
+                if existing:
+                    conn.execute(
+                        "UPDATE precios SET precio_compra = ?, precio_venta = ?, fecha_actualizacion = ? WHERE producto = ?",
+                        (cost, price, today, product_name)
+                    )
+                else:
+                    conn.execute(
+                        "INSERT INTO precios (producto, precio_compra, precio_venta, fecha_actualizacion) VALUES (?, ?, ?, ?)",
+                        (product_name, cost, price, today)
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+
+            margin = ((price - cost) / price * 100) if price > 0 else 0
+
+            markup = types.InlineKeyboardMarkup(row_width=2)
+            markup.add(
+                types.InlineKeyboardButton("💰 Ver todos los precios", callback_data="cmd_precios"),
+                types.InlineKeyboardButton("📄 Generar PDF", callback_data="price_pdf"),
+            )
+
+            bot.send_message(
+                message.chat.id,
+                f"✅ <b>Precio actualizado</b>\n\n"
+                f"📦 {product_name}\n"
+                f"💲 Costo: ${cost:,.0f}\n"
+                f"💰 Venta: <b>${price:,.0f}</b>\n"
+                f"📈 Margen: {margin:.0f}%",
+                reply_markup=markup
+            )
+        except ValueError:
+            bot.send_message(message.chat.id, "❌ Valor inválido. Ingresa un número.")
+        except Exception as e:
+            bot.send_message(message.chat.id, f"⚠️ Error: {e}")
+
+    @bot.callback_query_handler(func=lambda call: call.data == "price_pdf")
+    def handle_price_pdf(call):
+        """Generate PDF when button is pressed."""
+        try:
+            bot.answer_callback_query(call.id, "📄 Generando PDF...")
+            conn = get_connection()
+            try:
+                prices = conn.execute("SELECT * FROM precios WHERE precio_venta > 0 ORDER BY producto").fetchall()
+            finally:
+                conn.close()
+
+            if not prices:
+                bot.send_message(call.message.chat.id, "⚠️ No hay precios configurados.")
+                return
+
+            call.message.from_user = call.from_user
+            generate_price_list_pdf(bot, call.message, prices)
+        except Exception as e:
+            bot.answer_callback_query(call.id, f"⚠️ Error: {e}")
+
+    @bot.callback_query_handler(func=lambda call: call.data == "price_new")
+    def handle_price_new(call):
+        """Add a new product to the price list."""
+        try:
+            bot.answer_callback_query(call.id)
+            call.message.from_user = call.from_user
+            bot.send_message(call.message.chat.id, "📦 Escribe el <b>nombre del nuevo producto</b>:")
+            bot.register_next_step_handler(call.message, step_new_product_name)
+        except Exception as e:
+            bot.answer_callback_query(call.id, f"⚠️ Error: {e}")
+
+    def step_new_product_name(message):
+        if not is_admin(message):
+            return
+        try:
+            product_name = message.text.strip()
+            if not product_name:
+                bot.send_message(message.chat.id, "❌ Nombre no puede estar vacío.")
+                return
+            bot.send_message(message.chat.id, f"📦 Producto: <b>{product_name}</b>\n\nEscribe el <b>costo de compra</b>:")
+            bot.register_next_step_handler(message, step_price_cost, product_name)
+        except Exception as e:
+            bot.send_message(message.chat.id, f"⚠️ Error: {e}")
+
+    # --------------- /precios_set (kept for command-line usage) ---------------
 
     @bot.message_handler(commands=["precios_set"])
     def cmd_prices_set(message):
@@ -317,19 +462,15 @@ def register(bot):
         try:
             text = message.text.replace("/precios_set", "").strip()
             if not text:
-                bot.send_message(
-                    message.chat.id,
-                    "❌ Uso: /precios_set [producto,costo,venta]\n\n"
-                    "Ejemplos:\n"
-                    "<code>/precios_set Caja Oleosoberano,85000,95000</code>\n"
-                    "<code>/precios_set Bidon 18L,70000,82000</code>\n"
-                    "<code>/precios_set Bidon 20L,78000,90000</code>"
-                )
+                # No arguments — show buttons instead
+                call_msg = message
+                call_msg.text = "/precios"
+                bot.process_new_messages([call_msg])
                 return
 
             parts = text.rsplit(",", 2)
             if len(parts) != 3:
-                bot.send_message(message.chat.id, "❌ Formato: producto,costo,venta")
+                bot.send_message(message.chat.id, "❌ Formato: /precios_set producto,costo,venta")
                 return
 
             product_name = parts[0].strip()
@@ -384,14 +525,15 @@ def register(bot):
                 conn.close()
 
             if not prices:
-                bot.send_message(message.chat.id, "⚠️ Primero configura precios con /precios_set")
+                bot.send_message(message.chat.id, "⚠️ Primero configura precios con /precios")
                 return
 
-            markup = types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
-            markup.add("📅 Clientes registrados HOY")
-            markup.add("👤 Un cliente específico (por ID)")
-            markup.add("👥 Todos los prospectos")
-            markup.add("❌ Cancelar")
+            markup = types.InlineKeyboardMarkup(row_width=1)
+            markup.add(
+                types.InlineKeyboardButton("📅 Clientes registrados HOY", callback_data="quote_today"),
+                types.InlineKeyboardButton("👤 Un cliente específico (por ID)", callback_data="quote_single"),
+                types.InlineKeyboardButton("👥 Todos los prospectos", callback_data="quote_prospects"),
+            )
 
             bot.send_message(
                 message.chat.id,
@@ -399,52 +541,59 @@ def register(bot):
                 "¿A quién deseas enviarle la lista de precios?",
                 reply_markup=markup
             )
-            bot.register_next_step_handler(message, step_quote_target, prices)
         except Exception as e:
             bot.send_message(message.chat.id, f"⚠️ Error: {e}")
 
-    def step_quote_target(message, prices):
-        if not is_admin(message):
-            return
+    @bot.callback_query_handler(func=lambda call: call.data.startswith("quote_"))
+    def handle_quote_callback(call):
+        """Handle quote target selection via inline buttons."""
         try:
-            selected = message.text.strip()
-            if "Cancelar" in selected:
-                bot.send_message(message.chat.id, "❌ Cancelado.", reply_markup=types.ReplyKeyboardRemove())
-                return
+            bot.answer_callback_query(call.id)
+            action = call.data.replace("quote_", "")
+
+            conn = get_connection()
+            try:
+                prices = conn.execute("SELECT * FROM precios WHERE precio_venta > 0 ORDER BY producto").fetchall()
+            finally:
+                conn.close()
 
             from datetime import date as d
             today = d.today().isoformat()
 
-            conn = get_connection()
-            try:
-                if "HOY" in selected:
+            call.message.from_user = call.from_user
+
+            if action == "today":
+                conn = get_connection()
+                try:
                     clients = conn.execute(
                         "SELECT id, nombre, telefono FROM clientes WHERE fecha_registro = ? AND telefono IS NOT NULL",
                         (today,)
                     ).fetchall()
-                    label = "registrados hoy"
-                elif "específico" in selected:
-                    bot.send_message(message.chat.id, "✍️ Escribe el <b>ID del cliente</b>:", reply_markup=types.ReplyKeyboardRemove())
-                    bot.register_next_step_handler(message, step_quote_single_client, prices)
+                finally:
+                    conn.close()
+                if not clients:
+                    bot.send_message(call.message.chat.id, "📭 No hay clientes registrados hoy con teléfono.")
                     return
-                elif "prospectos" in selected:
+                send_quote_links(bot, call.message, clients, prices, "registrados hoy")
+
+            elif action == "single":
+                bot.send_message(call.message.chat.id, "✍️ Escribe el <b>ID del cliente</b>:")
+                bot.register_next_step_handler(call.message, step_quote_single_client, prices)
+
+            elif action == "prospects":
+                conn = get_connection()
+                try:
                     clients = conn.execute(
                         "SELECT id, nombre, telefono FROM clientes WHERE estado = 'Prospecto' AND telefono IS NOT NULL"
                     ).fetchall()
-                    label = "prospectos"
-                else:
-                    clients = []
-                    label = "desconocido"
-            finally:
-                conn.close()
-
-            if not clients:
-                bot.send_message(message.chat.id, f"📭 No hay clientes {label} con teléfono.", reply_markup=types.ReplyKeyboardRemove())
-                return
-
-            send_quote_links(bot, message, clients, prices, label)
+                finally:
+                    conn.close()
+                if not clients:
+                    bot.send_message(call.message.chat.id, "📭 No hay prospectos con teléfono.")
+                    return
+                send_quote_links(bot, call.message, clients, prices, "prospectos")
         except Exception as e:
-            bot.send_message(message.chat.id, f"⚠️ Error: {e}")
+            bot.answer_callback_query(call.id, f"⚠️ Error: {e}")
 
     def step_quote_single_client(message, prices):
         if not is_admin(message):

@@ -27,13 +27,11 @@ def register(bot):
                 active_clients = conn.execute("SELECT COUNT(*) as c FROM clientes WHERE estado = 'Activo'").fetchone()["c"]
                 prospects = conn.execute("SELECT COUNT(*) as c FROM clientes WHERE estado = 'Prospecto'").fetchone()["c"]
                 pending_orders = conn.execute("SELECT COUNT(*) as c FROM pedidos WHERE estado = 'Pendiente'").fetchone()["c"]
+                unpaid = conn.execute("SELECT COUNT(*) as c FROM pedidos WHERE estado = 'Entregado' AND (estado_pago IS NULL OR estado_pago = 'Pendiente')").fetchone()["c"]
                 today = date.today().isoformat()
                 today_sales = conn.execute(
                     "SELECT COALESCE(SUM(cantidad * precio_venta), 0) as t FROM pedidos WHERE fecha = ?", (today,)
                 ).fetchone()["t"]
-                low_stock = conn.execute(
-                    "SELECT producto, stock_actual, stock_minimo FROM inventario WHERE stock_actual <= stock_minimo"
-                ).fetchall()
             finally:
                 conn.close()
 
@@ -42,57 +40,74 @@ def register(bot):
             dashboard += "━" * 32 + "\n\n"
 
             dashboard += "📊 <b>PANEL RÁPIDO:</b>\n"
-            dashboard += f"  👥 Clientes: {total_clients} (Activos: {active_clients} | Prospectos: {prospects})\n"
-            dashboard += f"  📦 Pedidos pendientes: <b>{pending_orders}</b>\n"
-            dashboard += f"  💰 Ventas hoy: <b>${today_sales:,.0f}</b>\n"
+            dashboard += f"  👥 Clientes: {total_clients} (✅ {active_clients} | ⏳ {prospects})\n"
+            dashboard += f"  📦 Pendientes: <b>{pending_orders}</b>\n"
+            dashboard += f"  💳 Sin pagar: <b>{unpaid}</b>\n"
+            dashboard += f"  💰 Ventas hoy: <b>${today_sales:,.0f}</b>\n\n"
+            dashboard += "👇 <b>Selecciona una acción:</b>"
 
-            if low_stock:
-                dashboard += "\n⚠️ <b>ALERTAS DE STOCK:</b>\n"
-                for item in low_stock:
-                    dashboard += f"  🟡 {item['producto']}: {item['stock_actual']} uds (mín: {item['stock_minimo']})\n"
+            # Build inline keyboard grid
+            markup = types.InlineKeyboardMarkup(row_width=3)
+            markup.row(
+                types.InlineKeyboardButton("👤 Nuevo Cliente", callback_data="cmd_nuevo_cliente"),
+                types.InlineKeyboardButton("👥 Clientes", callback_data="cmd_clientes"),
+                types.InlineKeyboardButton("🔍 Buscar", callback_data="cmd_buscar"),
+            )
+            markup.row(
+                types.InlineKeyboardButton("🛒 Vender", callback_data="cmd_vender"),
+                types.InlineKeyboardButton("📦 Pedidos", callback_data="cmd_pedidos"),
+                types.InlineKeyboardButton("💳 Cobrar", callback_data="cmd_cobrar"),
+            )
+            markup.row(
+                types.InlineKeyboardButton("💰 Precios", callback_data="cmd_precios"),
+                types.InlineKeyboardButton("📲 Cotizar", callback_data="cmd_cotizar"),
+                types.InlineKeyboardButton("🎯 Meta", callback_data="cmd_meta"),
+            )
+            markup.row(
+                types.InlineKeyboardButton("📅 Ruta Semanal", callback_data="cmd_ruta_semanal"),
+                types.InlineKeyboardButton("🗺️ Prospección", callback_data="cmd_ruta_pie"),
+                types.InlineKeyboardButton("🚚 Entregas", callback_data="cmd_ruta_camion"),
+            )
+            markup.row(
+                types.InlineKeyboardButton("📊 Pipeline", callback_data="cmd_seguimiento"),
+                types.InlineKeyboardButton("📡 Radar", callback_data="cmd_radar"),
+                types.InlineKeyboardButton("📈 Margen", callback_data="cmd_margen"),
+            )
+            markup.row(
+                types.InlineKeyboardButton("💼 Caja", callback_data="cmd_caja"),
+                types.InlineKeyboardButton("💳 Cartera", callback_data="cmd_cuentas_por_cobrar"),
+                types.InlineKeyboardButton("📝 Gasto", callback_data="cmd_gasto"),
+            )
+            markup.row(
+                types.InlineKeyboardButton("📄 Remisión", callback_data="cmd_remision"),
+                types.InlineKeyboardButton("🚛 Despacho", callback_data="cmd_despacho_jd"),
+                types.InlineKeyboardButton("📦 Inventario", callback_data="cmd_inventario"),
+            )
+            markup.row(
+                types.InlineKeyboardButton("✏️ Editar", callback_data="cmd_editar"),
+                types.InlineKeyboardButton("🗑️ Eliminar", callback_data="cmd_eliminar"),
+                types.InlineKeyboardButton("💾 Backup", callback_data="cmd_backup"),
+            )
 
-            dashboard += "\n📋 <b>COMANDOS:</b>\n"
-            dashboard += "\n<b>CRM:</b>\n"
-            dashboard += "  /nuevo_cliente — Registrar cliente\n"
-            dashboard += "  /clientes — Ver cartera\n"
-            dashboard += "  /buscar — Buscar cliente\n"
-            dashboard += "  /ficha [ID] — Perfil completo\n"
-            dashboard += "  /nota [ID] — Agregar nota\n"
-            dashboard += "  /seguimiento — Pipeline comercial\n"
-            dashboard += "  /radar — Inteligencia comercial\n"
-            dashboard += "\n<b>VENTAS:</b>\n"
-            dashboard += "  /vender — Crear pedido\n"
-            dashboard += "  /repetir [ID] — Repetir último pedido\n"
-            dashboard += "  /pedidos — Ver pedidos\n"
-            dashboard += "  /entregar [ID] — Marcar entregado\n"
-            dashboard += "  /cobrar — Cobros pendientes\n"
-            dashboard += "  /pagar [ID] — Marcar pagado\n"
-            dashboard += "\n<b>PRECIOS:</b>\n"
-            dashboard += "  /precios — Lista de precios + PDF\n"
-            dashboard += "  /precios_set — Actualizar precios\n"
-            dashboard += "  /cotizar — Enviar cotización WhatsApp\n"
-            dashboard += "\n<b>LOGÍSTICA:</b>\n"
-            dashboard += "  /ruta_semanal — Ruta fija semanal\n"
-            dashboard += "  /ruta_pie — Radar de prospección\n"
-            dashboard += "  /ruta_camion — Ruta de entregas\n"
-            dashboard += "  /inventario — Control de stock\n"
-            dashboard += "\n<b>DOCUMENTOS:</b>\n"
-            dashboard += "  /remision — Remisión PDF\n"
-            dashboard += "  /despacho_jd — Despacho formal\n"
-            dashboard += "\n<b>FINANZAS:</b>\n"
-            dashboard += "  /gasto — Registrar gasto\n"
-            dashboard += "  /caja — Estado de resultados\n"
-            dashboard += "  /cuentas_por_cobrar — Cartera\n"
-            dashboard += "  /margen — Análisis rentabilidad\n"
-            dashboard += "  /meta — Meta semanal\n"
-            dashboard += "\n<b>ADMIN:</b>\n"
-            dashboard += "  /editar — Editar registros\n"
-            dashboard += "  /eliminar — Eliminar registros\n"
-            dashboard += "  /backup — Respaldar BD\n"
-            dashboard += "  /cancelar — Abortar acción\n"
-
-            bot.send_message(message.chat.id, dashboard)
+            bot.send_message(message.chat.id, dashboard, reply_markup=markup)
         except Exception as e:
+            bot.send_message(message.chat.id, f"⚠️ Error: {e}")
+
+    # --------------- INLINE BUTTON ROUTER ---------------
+
+    @bot.callback_query_handler(func=lambda call: call.data.startswith("cmd_"))
+    def handle_command_buttons(call):
+        """Route inline button presses to their corresponding commands."""
+        try:
+            bot.answer_callback_query(call.id)
+            cmd = call.data.replace("cmd_", "")
+            # Create a fake message object to reuse command handlers
+            call.message.from_user = call.from_user
+            call.message.text = f"/{cmd}"
+            # Trigger the command
+            bot.process_new_messages([call.message])
+        except Exception as e:
+            bot.answer_callback_query(call.id, f"⚠️ Error: {e}")
             bot.send_message(message.chat.id, f"⚠️ Error: {e}")
 
     # --------------- /cancelar ---------------

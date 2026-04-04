@@ -257,57 +257,73 @@ def register(bot):
         if not is_admin(message):
             return
         try:
-            markup = types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
-            markup.add("✅ Activos", "⏳ Prospectos", "📋 Todos")
-            markup.add("❌ Cancelar")
+            markup = types.InlineKeyboardMarkup(row_width=3)
+            markup.row(
+                types.InlineKeyboardButton("✅ Activos", callback_data="clients_filter:Activo"),
+                types.InlineKeyboardButton("⏳ Prospectos", callback_data="clients_filter:Prospecto"),
+                types.InlineKeyboardButton("📋 Todos", callback_data="clients_filter:Todos"),
+            )
             bot.send_message(message.chat.id, "👥 <b>CARTERA DE CLIENTES</b>\n\n¿Qué filtro aplicar?", reply_markup=markup)
-            bot.register_next_step_handler(message, step_clients_filter)
         except Exception as e:
             bot.send_message(message.chat.id, f"⚠️ Error: {e}")
 
-    def step_clients_filter(message):
-        if not is_admin(message):
-            return
+    @bot.callback_query_handler(func=lambda call: call.data.startswith("clients_filter:"))
+    def handle_clients_filter(call):
+        """Handle client filter inline buttons."""
         try:
-            selected = message.text.strip()
-            if "Cancelar" in selected:
-                bot.send_message(message.chat.id, "❌ Cancelado.", reply_markup=types.ReplyKeyboardRemove())
-                return
+            bot.answer_callback_query(call.id)
+            filter_type = call.data.replace("clients_filter:", "")
 
             conn = get_connection()
             try:
-                if "Activos" in selected:
-                    clients = conn.execute("SELECT * FROM clientes WHERE estado = 'Activo' ORDER BY nombre").fetchall()
-                    label = "ACTIVOS"
-                elif "Prospectos" in selected:
-                    clients = conn.execute("SELECT * FROM clientes WHERE estado = 'Prospecto' ORDER BY nombre").fetchall()
-                    label = "PROSPECTOS"
-                else:
+                if filter_type == "Todos":
                     clients = conn.execute("SELECT * FROM clientes ORDER BY nombre").fetchall()
                     label = "TODOS"
+                else:
+                    clients = conn.execute("SELECT * FROM clientes WHERE estado = ? ORDER BY nombre", (filter_type,)).fetchall()
+                    label = filter_type.upper() + "S"
             finally:
                 conn.close()
 
             if not clients:
-                bot.send_message(message.chat.id, f"📭 No hay clientes ({label}).", reply_markup=types.ReplyKeyboardRemove())
+                bot.send_message(call.message.chat.id, f"📭 No hay clientes ({label}).")
                 return
 
             response = f"👥 <b>CLIENTES — {label}</b> ({len(clients)}):\n\n"
+            markup = types.InlineKeyboardMarkup(row_width=2)
+
             for c in clients:
                 state_icon = "✅" if c["estado"] == "Activo" else "⏳"
                 day_tag = f" | 📅 {c['dia_visita']}" if c["dia_visita"] else ""
                 gps_tag = " 📌" if c["latitud"] else ""
                 response += f"{state_icon} <b>{c['id']}. {c['nombre']}</b>{gps_tag}\n"
-                response += f"   📱 {c['telefono'] or 'N/A'} | 🏪 {c['tipo_negocio'] or 'N/A'}{day_tag}\n"
-                response += f"   📍 {c['direccion'] or 'N/A'}\n\n"
+                response += f"   📱 {c['telefono'] or 'N/A'} | 🏪 {c['tipo_negocio'] or 'N/A'}{day_tag}\n\n"
+
+                markup.add(
+                    types.InlineKeyboardButton(f"📋 Ficha #{c['id']} — {c['nombre'][:20]}", callback_data=f"ficha:{c['id']}"),
+                )
 
             if len(response) > 4000:
                 for part in safe_split(response):
-                    bot.send_message(message.chat.id, part, reply_markup=types.ReplyKeyboardRemove())
+                    bot.send_message(call.message.chat.id, part)
+                # Send buttons separately
+                bot.send_message(call.message.chat.id, "👇 <b>Ver ficha de un cliente:</b>", reply_markup=markup)
             else:
-                bot.send_message(message.chat.id, response, reply_markup=types.ReplyKeyboardRemove())
+                bot.send_message(call.message.chat.id, response, reply_markup=markup)
         except Exception as e:
-            bot.send_message(message.chat.id, f"⚠️ Error: {e}")
+            bot.send_message(call.message.chat.id, f"⚠️ Error: {e}")
+
+    @bot.callback_query_handler(func=lambda call: call.data.startswith("ficha:"))
+    def handle_ficha_callback(call):
+        """Handle ficha button — redirect to /ficha command."""
+        try:
+            bot.answer_callback_query(call.id)
+            client_id = call.data.replace("ficha:", "")
+            call.message.from_user = call.from_user
+            call.message.text = f"/ficha {client_id}"
+            bot.process_new_messages([call.message])
+        except Exception as e:
+            bot.answer_callback_query(call.id, f"⚠️ Error: {e}")
 
     # --------------- /buscar ---------------
 

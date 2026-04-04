@@ -165,66 +165,83 @@ def register(bot):
         if not is_admin(message):
             return
         try:
-            markup = types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
-            markup.add("⏳ Pendientes", "✅ Entregados", "📋 Todos")
-            markup.add("❌ Cancelar")
+            markup = types.InlineKeyboardMarkup(row_width=3)
+            markup.row(
+                types.InlineKeyboardButton("⏳ Pendientes", callback_data="orders_filter:Pendiente"),
+                types.InlineKeyboardButton("✅ Entregados", callback_data="orders_filter:Entregado"),
+                types.InlineKeyboardButton("📋 Todos", callback_data="orders_filter:Todos"),
+            )
             bot.send_message(message.chat.id, "📦 <b>PEDIDOS</b>\n\n¿Qué filtro aplicar?", reply_markup=markup)
-            bot.register_next_step_handler(message, step_orders_filter)
         except Exception as e:
             bot.send_message(message.chat.id, f"⚠️ Error: {e}")
 
-    def step_orders_filter(message):
-        if not is_admin(message):
-            return
+    @bot.callback_query_handler(func=lambda call: call.data.startswith("orders_filter:"))
+    def handle_orders_filter(call):
+        """Handle order filter inline buttons."""
         try:
-            selected = message.text.strip()
-            if "Cancelar" in selected:
-                bot.send_message(message.chat.id, "❌ Cancelado.", reply_markup=types.ReplyKeyboardRemove())
-                return
+            bot.answer_callback_query(call.id)
+            filter_type = call.data.replace("orders_filter:", "")
 
             conn = get_connection()
             try:
-                if "Pendientes" in selected:
-                    orders = conn.execute("""
-                        SELECT p.*, c.nombre as cliente_nombre FROM pedidos p
-                        JOIN clientes c ON p.cliente_id = c.id WHERE p.estado = 'Pendiente' ORDER BY p.fecha DESC
-                    """).fetchall()
-                    label = "PENDIENTES"
-                elif "Entregados" in selected:
-                    orders = conn.execute("""
-                        SELECT p.*, c.nombre as cliente_nombre FROM pedidos p
-                        JOIN clientes c ON p.cliente_id = c.id WHERE p.estado = 'Entregado' ORDER BY p.fecha DESC
-                    """).fetchall()
-                    label = "ENTREGADOS"
-                else:
+                if filter_type == "Todos":
                     orders = conn.execute("""
                         SELECT p.*, c.nombre as cliente_nombre FROM pedidos p
                         JOIN clientes c ON p.cliente_id = c.id ORDER BY p.fecha DESC
                     """).fetchall()
                     label = "TODOS"
+                else:
+                    orders = conn.execute("""
+                        SELECT p.*, c.nombre as cliente_nombre FROM pedidos p
+                        JOIN clientes c ON p.cliente_id = c.id WHERE p.estado = ? ORDER BY p.fecha DESC
+                    """, (filter_type,)).fetchall()
+                    label = filter_type.upper() + "S"
             finally:
                 conn.close()
 
             if not orders:
-                bot.send_message(message.chat.id, f"📭 No hay pedidos ({label}).", reply_markup=types.ReplyKeyboardRemove())
+                bot.send_message(call.message.chat.id, f"📭 No hay pedidos ({label}).")
                 return
 
             response = f"📦 <b>PEDIDOS — {label}</b> ({len(orders)}):\n\n"
+            markup = types.InlineKeyboardMarkup(row_width=2)
+
             for o in orders:
                 total = o["cantidad"] * o["precio_venta"]
                 state_icon = "⏳" if o["estado"] == "Pendiente" else "✅"
+                pay_icon = ""
+                if o["estado"] == "Entregado":
+                    pay_icon = " 🟢" if o.get("estado_pago") == "Pagado" else " 🔴"
                 response += f"{state_icon} <b>#{o['id']}</b> — {o['cliente_nombre']}\n"
-                response += f"   📦 {o['cantidad']}x {o['producto']} ({o['tipo_carga']})\n"
-                response += f"   💰 ${total:,.0f} (${o['precio_venta']:,.0f} c/u)\n"
-                response += f"   📅 {o['fecha']} | {o['estado']}\n\n"
+                response += f"   📦 {o['cantidad']}x {o['producto']}\n"
+                response += f"   💰 ${total:,.0f} | {o['estado']}{pay_icon}\n\n"
+
+                # Action buttons for pending orders
+                if o["estado"] == "Pendiente":
+                    markup.add(
+                        types.InlineKeyboardButton(f"✅ Entregar #{o['id']}", callback_data=f"deliver:{o['id']}")
+                    )
 
             if len(response) > 4000:
                 for part in safe_split(response):
-                    bot.send_message(message.chat.id, part, reply_markup=types.ReplyKeyboardRemove())
+                    bot.send_message(call.message.chat.id, part)
+                bot.send_message(call.message.chat.id, "👇 Acciones:", reply_markup=markup)
             else:
-                bot.send_message(message.chat.id, response, reply_markup=types.ReplyKeyboardRemove())
+                bot.send_message(call.message.chat.id, response, reply_markup=markup)
         except Exception as e:
-            bot.send_message(message.chat.id, f"⚠️ Error: {e}")
+            bot.send_message(call.message.chat.id, f"⚠️ Error: {e}")
+
+    @bot.callback_query_handler(func=lambda call: call.data.startswith("deliver:"))
+    def handle_deliver_callback(call):
+        """Handle inline deliver button."""
+        try:
+            bot.answer_callback_query(call.id)
+            order_id = call.data.replace("deliver:", "")
+            call.message.from_user = call.from_user
+            call.message.text = f"/entregar {order_id}"
+            bot.process_new_messages([call.message])
+        except Exception as e:
+            bot.answer_callback_query(call.id, f"⚠️ Error: {e}")
 
     # --------------- /entregar ---------------
 
@@ -316,6 +333,8 @@ def register(bot):
             response += f"💰 Total por cobrar: <b>${total_pending:,.0f}</b>\n"
             response += f"📦 Pedidos sin pagar: <b>{len(unpaid)}</b>\n\n"
 
+            markup = types.InlineKeyboardMarkup(row_width=2)
+
             for row in unpaid:
                 phone = sanitize_phone_co(row["telefono"])
                 days_ago = (date.today() - date.fromisoformat(row["fecha"])).days
@@ -326,14 +345,54 @@ def register(bot):
 
                 response += f"{urgency} <b>#{row['id']}</b> — {row['nombre']}\n"
                 response += f"   📦 {row['cantidad']}x {row['producto']} | ${row['total']:,.0f}\n"
-                response += f"   📅 {row['fecha']} ({days_ago} días)\n"
-                response += f"   📲 <a href='{wa_url}'>Cobrar por WhatsApp</a>\n\n"
+                response += f"   📅 {row['fecha']} ({days_ago} días)\n\n"
 
-            response += "\n💡 Usa /pagar [ID_Pedido] para marcar como pagado."
+                # Two buttons per order: WhatsApp + Mark Paid
+                markup.row(
+                    types.InlineKeyboardButton(f"📲 Cobrar #{row['id']}", url=wa_url),
+                    types.InlineKeyboardButton(f"✅ Pagado #{row['id']}", callback_data=f"pay:{row['id']}"),
+                )
 
-            bot.send_message(message.chat.id, response, disable_web_page_preview=True)
+            bot.send_message(message.chat.id, response, reply_markup=markup, disable_web_page_preview=True)
         except Exception as e:
             bot.send_message(message.chat.id, f"⚠️ Error: {e}")
+
+    # --------------- PAY INLINE CALLBACK ---------------
+
+    @bot.callback_query_handler(func=lambda call: call.data.startswith("pay:"))
+    def handle_pay_callback(call):
+        """Handle inline pay button."""
+        try:
+            order_id = int(call.data.replace("pay:", ""))
+            conn = get_connection()
+            try:
+                order = conn.execute("""
+                    SELECT p.*, c.nombre FROM pedidos p JOIN clientes c ON p.cliente_id = c.id WHERE p.id = ?
+                """, (order_id,)).fetchone()
+
+                if not order:
+                    bot.answer_callback_query(call.id, "❌ Pedido no encontrado.")
+                    return
+
+                if order["estado_pago"] == "Pagado":
+                    bot.answer_callback_query(call.id, "ℹ️ Ya está pagado.")
+                    return
+
+                conn.execute("UPDATE pedidos SET estado_pago = 'Pagado' WHERE id = ?", (order_id,))
+                conn.commit()
+            finally:
+                conn.close()
+
+            total = order["cantidad"] * order["precio_venta"]
+            bot.answer_callback_query(call.id, f"✅ Pedido #{order_id} marcado como PAGADO")
+            bot.send_message(
+                call.message.chat.id,
+                f"✅ <b>Pago registrado</b>\n\n"
+                f"📦 Pedido #{order_id} — {order['nombre']}\n"
+                f"💰 ${total:,.0f} — <b>PAGADO ✅</b>"
+            )
+        except Exception as e:
+            bot.answer_callback_query(call.id, f"⚠️ Error: {e}")
 
     # --------------- /pagar ---------------
 
