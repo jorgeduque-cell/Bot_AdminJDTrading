@@ -14,3 +14,6 @@ services:
         sync: false
       - key: PYTHON_VERSION
         value: "3.11.8"
+      - key: RENDER_EXTERNAL_URL
+        value: "https://jd-trading-bot.onrender.com"
+
